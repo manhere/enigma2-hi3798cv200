@@ -318,7 +318,7 @@ jobs:
           # 等 TLS 全链，Tools/Downloader.py 需要）+ pyusb
           # （StartEnigma.py: from usb.backend.libusb1 import get_backend）
           /usr/local/bin/python3.13 -m pip install -q --target \
-            ${PKGDIR}/usr/local/lib/python3.13/site-packages "twisted[tls]" pyusb
+            ${PKGDIR}/usr/local/lib/python3.13/site-packages "twisted[tls]" pyusb CT3
           find ${PKGDIR}/usr/local/lib/python3.13/site-packages -maxdepth 1 -mindepth 1 | head
           # libpython3.13 的动态链接查找路径
           echo "/usr/local/lib" > ${PKGDIR}/etc/ld.so.conf.d/enigma2-python.conf
@@ -331,6 +331,23 @@ jobs:
           cp -a /tmp/MetrixHD/usr/share/enigma2/MetrixHD ${PKGDIR}/usr/local/share/enigma2/
           cp -a /tmp/MetrixHD/usr/lib/enigma2/python/Components ${PKGDIR}/usr/local/lib/enigma2/python/
           cp -a /tmp/MetrixHD/usr/lib/enigma2/python/Plugins ${PKGDIR}/usr/local/lib/enigma2/python/
+
+          # ---- OpenWebif（浏览器控制台：虚拟遥控器/频道管理/全部设置）----
+          # oe-alliance/OpenWebif 2.x（openATV 实际使用的 fork），纯 Python 插件，
+          # plugin/ 整目录平移到 Plugins/Extensions/OpenWebif 即完成安装；
+          # WHERE_SESSIONSTART 自动起 Web 服务（默认 80 端口）。
+          # 运行期依赖：twisted/pyOpenSSL（已带）+ Cheetah（上方 pip 已装 CT3 fork）
+          git clone --depth 1 https://github.com/oe-alliance/OpenWebif /tmp/OpenWebif
+          OWIFDIR=${PKGDIR}/usr/local/lib/enigma2/python/Plugins/Extensions/OpenWebif
+          mkdir -p ${OWIFDIR}
+          cp -a /tmp/OpenWebif/plugin/. ${OWIFDIR}/
+          # 翻译：locale/*.po -> plugin/locale/<lang>/LC_MESSAGES/OpenWebif.mo（domain 固定 OpenWebif）
+          for p in /tmp/OpenWebif/locale/*.po; do
+            lang=$(basename "$p" .po)
+            mkdir -p ${OWIFDIR}/locale/$lang/LC_MESSAGES
+            msgfmt -o ${OWIFDIR}/locale/$lang/LC_MESSAGES/OpenWebif.mo "$p"
+          done
+          echo "OpenWebif files: $(find ${OWIFDIR} -type f | wc -l)"
           # 皮肤 XML 内 6 处硬编码 /usr/share/enigma2/MetrixHD → 符号链接兜底
 
           cat > ${PKGDIR}/DEBIAN/postinst <<'SH'
@@ -340,9 +357,12 @@ jobs:
           # enigma2 假定 OE 镜像的 opkg 包管理布局（International/SystemInfo 等直接列目录），
           # Debian 是 dpkg——补空目录消除启动 FileNotFoundError
           mkdir -p /var/lib/opkg/info /var/lib/opkg/lists /etc/opkg
-          # MetrixHD 皮肤硬编码 /usr/share/enigma2/MetrixHD 路径
-          mkdir -p /usr/share/enigma2
-          ln -sfn /usr/local/share/enigma2/MetrixHD /usr/share/enigma2/MetrixHD
+          # 皮肤/插件大量硬编码 /usr/share/enigma2（MetrixHD skin.xml 6 处、
+          # OpenWebif root.py/defaults.py 等）——整目录符号链接一次覆盖
+          if [ ! -L /usr/share/enigma2 ]; then
+            rm -rf /usr/share/enigma2
+            ln -sfn /usr/local/share/enigma2 /usr/share/enigma2
+          fi
           SH
           chmod 755 ${PKGDIR}/DEBIAN/postinst
 
