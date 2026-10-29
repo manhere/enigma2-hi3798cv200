@@ -80,6 +80,14 @@ jobs:
           ldconfig
           pkg-config --modversion tuxbox-tuxtxt
 
+      - name: Sync DVB uapi headers with target kernel (6.12.y)
+        run: |
+          # Debian 12 的 linux-libc-dev(6.1) 缺 SYS_DVBC2 等，用目标内核 HiSilicon linux-6.12.y 的 uapi 头覆盖
+          for f in audio.h ca.h dmx.h frontend.h net.h osd.h version.h video.h; do
+            curl -fsSL -o /usr/include/linux/dvb/$f \
+              https://raw.githubusercontent.com/HiSilicon-Development/linux-6.12.y/main/include/uapi/linux/dvb/$f
+          done
+
       # ---- enigma2 本体 ----
 
       - name: Checkout enigma2 (openatv master)
