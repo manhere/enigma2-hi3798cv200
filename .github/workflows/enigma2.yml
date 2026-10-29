@@ -90,6 +90,15 @@ jobs:
           # 原始 uapi 头含内核态注解 __user，等价 headers_install 剥离
           sed -i 's/\b__user\b//g' /usr/include/linux/dvb/*.h
 
+      - name: Build libtuxtxt32bpp (OpenPLi, enigma2 links -ltuxtxt32bpp)
+        run: |
+          cd /tmp/tuxtxt/tuxtxt
+          autoreconf -fi
+          DVB_API_VERSION=5 ./configure --prefix=/usr
+          make -j$(nproc) install
+          ldconfig
+          ls -la /usr/lib/libtuxtxt*
+
       # ---- enigma2 本体 ----
 
       - name: Checkout enigma2 (openatv master)
