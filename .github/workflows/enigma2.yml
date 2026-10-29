@@ -209,6 +209,27 @@ jobs:
               print('AVSwitch.getModeList already patched')
           else:
               raise SystemExit('AVSwitch.py anchor not found - upstream changed, review needed')
+
+          # main/enigma.cpp: 盒子 Debian 无 glibc UTF-8 locale，内嵌 Python
+          # locale 回退 POSIX → open() 默认 ascii → fileReadLines 读自带
+          # groupedservices（含 UTF-8 字节）时 UnicodeDecodeError，InfoBar
+          # 启动即 exit 5（2026-10-29 盒子实测）。强制 PYTHONUTF8=1
+          # （PEP 540 UTF-8 模式），open()/stdio 默认 UTF-8，等同 OE 镜像
+          # 有真实 UTF-8 locale 的效果。
+          p = 'main/enigma.cpp'
+          s = open(p).read()
+          old = '\tsetenv("PYTHONPATH", eEnv::resolve("${libdir}/enigma2/python").c_str(), 0);\n'
+          new = (old
+                 + '\t// Force Python UTF-8 mode: host lacks glibc UTF-8 locales,\n'
+                   '\t// so open() would default to ascii and crash on UTF-8 data files.\n'
+                   '\tsetenv("PYTHONUTF8", "1", 1);\n')
+          if old in s:
+              open(p, 'w').write(s.replace(old, new, 1))
+              print('enigma.cpp PYTHONUTF8 patched')
+          elif 'PYTHONUTF8' in s:
+              print('enigma.cpp already patched')
+          else:
+              raise SystemExit('enigma.cpp anchor not found - upstream changed, review needed')
           EOF
 
       - name: Configure
@@ -290,13 +311,21 @@ jobs:
           # 翻译本体 po/<lang>/LC_MESSAGES/enigma2.mo 由 make install 装到
           # ${pkgdatadir}/po/（/usr/local/share/enigma2/po/），随 staging 一起打包。
           ls ${PKGDIR}/usr/local/share/enigma2/po/ | head -8 || true
+          # 只保留 英语/简体中文/繁体中文（zh_HK 为繁中），其余语言目录
+          # 与 po 根目录散装 .po/.pot 一并裁剪（既满足需求又给包瘦身，
+          # 还能消除 installedDirectories/installedPackages 计数不等告警）
+          KEEP_LOCALES=" en zh_CN zh_HK "
+          for d in ${PKGDIR}/usr/local/share/enigma2/po/*/; do
+            lang=$(basename "$d")
+            case "${KEEP_LOCALES}" in *" ${lang} "*) ;; *) rm -rf "$d" ;; esac
+          done
+          find ${PKGDIR}/usr/local/share/enigma2/po -maxdepth 1 -type f -delete
           if [ ! -f ${PKGDIR}/usr/local/share/enigma2/po/zh_CN/LC_MESSAGES/enigma2.mo ]; then
-            # 兜底：staging 缺 .mo 时从源码 po 目录现场编译
-            mkdir -p ${PKGDIR}/usr/local/share/enigma2/po
-            for p in enigma2/po/*.po; do
-              lang=$(basename "$p" .po)
+            # 兜底：staging 缺 .mo 时从源码 po 目录现场编译（仅编译保留的三种）
+            for lang in en zh_CN zh_HK; do
+              [ -f enigma2/po/$lang.po ] || continue
               mkdir -p ${PKGDIR}/usr/local/share/enigma2/po/$lang/LC_MESSAGES
-              msgfmt -o ${PKGDIR}/usr/local/share/enigma2/po/$lang/LC_MESSAGES/enigma2.mo "$p"
+              msgfmt -o ${PKGDIR}/usr/local/share/enigma2/po/$lang/LC_MESSAGES/enigma2.mo "enigma2/po/$lang.po"
             done
           fi
           mkdir -p ${PKGDIR}/var/lib/opkg/info
