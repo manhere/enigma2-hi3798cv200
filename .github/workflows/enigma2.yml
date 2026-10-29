@@ -236,6 +236,10 @@ jobs:
           mkdir -p ${PKGDIR}/usr/local/lib ${PKGDIR}/etc/ld.so.conf.d
           cp -a /usr/local/lib/libpython3.13.so* ${PKGDIR}/usr/local/lib/
           cp -a /usr/local/lib/python3.13 ${PKGDIR}/usr/local/lib/
+          # python3.13 解释器本体（enigma2 内嵌 libpython 能跑，但盒子端
+          # 无解释器无法做诊断/解包；一起打包）
+          mkdir -p ${PKGDIR}/usr/local/bin
+          cp -a /usr/local/bin/python3.13 ${PKGDIR}/usr/local/bin/python3.13
           # 瘦身：测试套件/构建配置/备件不需要
           rm -rf ${PKGDIR}/usr/local/lib/python3.13/test \
                  ${PKGDIR}/usr/local/lib/python3.13/idlelib \
