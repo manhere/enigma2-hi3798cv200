@@ -163,7 +163,8 @@ jobs:
 
       - name: Package .deb
         run: |
-          PKGDIR=/tmp/enigma2-hi3798cv200_${E2VER}_arm64
+          # 打包到 $GITHUB_WORKSPACE（容器挂载卷），upload-artifact 才能取到
+          PKGDIR=$GITHUB_WORKSPACE/enigma2-hi3798cv200_${E2VER}_arm64
           mkdir -p ${PKGDIR}/DEBIAN
           cp -a /tmp/e2-staging/* ${PKGDIR}/
           cat > ${PKGDIR}/DEBIAN/control <<EOF
@@ -178,11 +179,11 @@ jobs:
           Priority: optional
           EOF
           dpkg-deb --build --root-owner-group ${PKGDIR}
-          ls -la /*.deb
+          ls -la ${GITHUB_WORKSPACE}/*.deb
 
       - name: Upload .deb artifact
         uses: actions/upload-artifact@v4
         with:
           name: enigma2-debian12-arm64
-          path: /enigma2-hi3798cv200*.deb
+          path: enigma2-hi3798cv200*.deb
           if-no-files-found: error
