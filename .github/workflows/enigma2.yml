@@ -94,6 +94,10 @@ jobs:
         run: |
           cd enigma2
           ./autogen.sh
+          # OE-A 魔改版 ax_python_devel 的路径 sed hack 会污染 Debian multiarch 路径，
+          # 预置 PYTHON_CPPFLAGS/PYTHON_LIBS 跳过其自动检测
+          PYTHON_CPPFLAGS="-I/usr/include/python3.11" \
+          PYTHON_LIBS="-L/usr/lib/aarch64-linux-gnu -lpython3.11" \
           ./configure \
             --with-gstversion=1.0 \
             --with-boxtype=${BOXTYPE} \
