@@ -63,7 +63,8 @@ jobs:
 
       - name: Build libtuxtxt (OpenPLi, provides tuxbox-tuxtxt)
         run: |
-          git clone --depth 1 https://github.com/OpenPLi/tuxtxt.git /tmp/tuxtxt
+          # openATV enigma2 配套的是 OE-A fork（提供 tuxtxt_enabledebug 等符号），非 OpenPLi 版
+          git clone --depth 1 https://github.com/oe-alliance/tuxtxt.git /tmp/tuxtxt
           cd /tmp/tuxtxt/libtuxtxt
           # libtuxtxt 需要 tuxbox-cvs 的头文件：libtuxbox/tuxbox.h + driver/include/tuxbox/*（header-only）
           curl -fsSL -o /usr/include/tuxbox.h \
