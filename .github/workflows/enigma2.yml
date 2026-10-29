@@ -256,6 +256,17 @@ jobs:
           find ${PKGDIR}/usr/local/lib/python3.13/site-packages -maxdepth 1 -mindepth 1 | head
           # libpython3.13 的动态链接查找路径
           echo "/usr/local/lib" > ${PKGDIR}/etc/ld.so.conf.d/enigma2-python.conf
+
+          # ---- MetrixHD 默认皮肤（openATV 官方 skin 包）----
+          # skin.py DEFAULT_SKIN=MetrixHD/skin.xml，缺失时 emergency skin
+          # （skin_default/skin.xml，OE 发行层产物）也不存在 → dirname(None) 崩溃
+          git clone --depth 1 https://github.com/openatv/MetrixHD /tmp/MetrixHD
+          mkdir -p ${PKGDIR}/usr/local/share/enigma2 ${PKGDIR}/usr/local/lib/enigma2/python
+          cp -a /tmp/MetrixHD/usr/share/enigma2/MetrixHD ${PKGDIR}/usr/local/share/enigma2/
+          cp -a /tmp/MetrixHD/usr/lib/enigma2/python/Components ${PKGDIR}/usr/local/lib/enigma2/python/
+          cp -a /tmp/MetrixHD/usr/lib/enigma2/python/Plugins ${PKGDIR}/usr/local/lib/enigma2/python/
+          # 皮肤 XML 内 6 处硬编码 /usr/share/enigma2/MetrixHD → 符号链接兜底
+
           cat > ${PKGDIR}/DEBIAN/postinst <<'SH'
           #!/bin/sh
           set -e
@@ -263,6 +274,9 @@ jobs:
           # enigma2 假定 OE 镜像的 opkg 包管理布局（International/SystemInfo 等直接列目录），
           # Debian 是 dpkg——补空目录消除启动 FileNotFoundError
           mkdir -p /var/lib/opkg/info /var/lib/opkg/lists /etc/opkg
+          # MetrixHD 皮肤硬编码 /usr/share/enigma2/MetrixHD 路径
+          mkdir -p /usr/share/enigma2
+          ln -sfn /usr/local/share/enigma2/MetrixHD /usr/share/enigma2/MetrixHD
           SH
           chmod 755 ${PKGDIR}/DEBIAN/postinst
 
