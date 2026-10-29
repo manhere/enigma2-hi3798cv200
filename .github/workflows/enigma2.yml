@@ -710,6 +710,30 @@ jobs:
           mkdir -p ${PKGDIR}/usr/share/fonts
           cp -f /tmp/tuxtxt/tuxtxt/font/tuxtxt.ttf ${PKGDIR}/usr/share/fonts/tuxtxt.ttf
 
+          # ---- systemd 开机自启单元 ----
+          # enigma2 必须经 supervisor wrapper（/usr/local/bin/enigma2）启动，
+          # 它承担 OE enigma2.sh 的退出码语义（重启UI/关机/重启）。
+          # ExecStartPre 等 /dev/dvb 就绪，规避开机竞态；Restart=always 兜底
+          # wrapper 对未知退出码的主动退出。
+          mkdir -p ${PKGDIR}/etc/systemd/system
+          cat > ${PKGDIR}/etc/systemd/system/e2.service <<'UNIT'
+          [Unit]
+          Description=enigma2 (OpenATV port for Hi3798CV200)
+          After=multi-user.target network.target systemd-udevd.service
+          Wants=network.target
+
+          [Service]
+          Type=simple
+          ExecStartPre=/bin/sh -c 'i=0; until [ -e /dev/dvb/adapter0/frontend0 ] || [ $i -ge 30 ]; do sleep 1; i=$((i+1)); done'
+          ExecStart=/usr/local/bin/enigma2
+          Restart=always
+          RestartSec=5
+          Environment=HOME=/root
+
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+
           cat > ${PKGDIR}/DEBIAN/postinst <<'SH'
           #!/bin/sh
           set -e
@@ -732,6 +756,8 @@ jobs:
           fi
           # UsageConfig 启动时写 /etc/tuxtxt/tuxtxt2.conf（tuxtxt 字幕配置）
           mkdir -p /etc/tuxtxt
+          # 开机自启：enable 幂等（离线建 symlink，无需 systemd 运行中）
+          systemctl enable e2.service 2>/dev/null || true
           SH
           chmod 755 ${PKGDIR}/DEBIAN/postinst
 
