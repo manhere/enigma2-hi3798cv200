@@ -40,7 +40,25 @@ jobs:
             libglib2.0-dev libfreetype-dev libfribidi-dev libpng-dev libxml2-dev \
             libssl-dev libcurl4-openssl-dev libavahi-client-dev \
             libjpeg-dev libgif-dev libwebp-dev libswscale-dev \
-            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev libffi-dev \
+            liblzma-dev libncursesw5-dev uuid-dev
+
+      # ---- Python 3.13：enigma2 master 已全面采用 PEP 701 f-string 语法（>300 处），
+      #      Debian 12 的 python3.11 无法解析，必须自带新解释器 ----
+
+      - name: Build Python 3.13 (master requires PEP 701 syntax)
+        run: |
+          PYVER=3.13.18
+          curl -fsSL -o /tmp/py.tgz "https://www.python.org/ftp/python/${PYVER}/Python-${PYVER}.tgz"
+          tar xzf /tmp/py.tgz -C /tmp
+          cd /tmp/Python-${PYVER}
+          ./configure --prefix=/usr/local --enable-shared --with-ensurepip=install \
+            >/dev/null
+          make -j$(nproc) >/dev/null
+          make altinstall >/dev/null
+          ldconfig
+          /usr/local/bin/python3.13 --version
 
       # ---- Debian 12 缺失的依赖：源码补编 ----
 
@@ -147,9 +165,9 @@ jobs:
           cd enigma2
           ./autogen.sh
           # OE-A 魔改版 ax_python_devel 的路径 sed hack 会污染 Debian multiarch 路径，
-          # 预置 PYTHON_CPPFLAGS/PYTHON_LIBS 跳过其自动检测
-          PYTHON_CPPFLAGS="-I/usr/include/python3.11" \
-          PYTHON_LIBS="-L/usr/lib/aarch64-linux-gnu -lpython3.11" \
+          # 预置 PYTHON_CPPFLAGS/PYTHON_LIBS 跳过其自动检测；用自带的 Python 3.13
+          PYTHON_CPPFLAGS="-I/usr/local/include/python3.13" \
+          PYTHON_LIBS="-L/usr/local/lib -lpython3.13" \
           ./configure \
             --with-gstversion=1.0 \
             --with-boxtype=${BOXTYPE} \
@@ -206,12 +224,38 @@ jobs:
           PKGDIR=$GITHUB_WORKSPACE/enigma2-hi3798cv200_${E2VER}_arm64
           mkdir -p ${PKGDIR}/DEBIAN
           cp -a /tmp/e2-staging/* ${PKGDIR}/
+
+          # ---- 内嵌 Python 3.13 运行时（libpython + stdlib + twisted）----
+          mkdir -p ${PKGDIR}/usr/local/lib ${PKGDIR}/etc/ld.so.conf.d
+          cp -a /usr/local/lib/libpython3.13.so* ${PKGDIR}/usr/local/lib/
+          cp -a /usr/local/lib/python3.13 ${PKGDIR}/usr/local/lib/
+          # 瘦身：测试套件/构建配置/备件不需要
+          rm -rf ${PKGDIR}/usr/local/lib/python3.13/test \
+                 ${PKGDIR}/usr/local/lib/python3.13/idlelib \
+                 ${PKGDIR}/usr/local/lib/python3.13/config-3.13* \
+                 ${PKGDIR}/usr/local/lib/python3.13/lib-dynload/*_tkit* \
+                 ${PKGDIR}/usr/local/lib/python3.13/site-packages/pip \
+                 ${PKGDIR}/usr/local/lib/python3.13/site-packages/setuptools \
+                 ${PKGDIR}/usr/local/lib/python3.13/site-packages/pkg_resources
+          # enigma2 运行期依赖 twisted（含全部纯 Python 依赖）
+          /usr/local/bin/python3.13 -m pip install -q --target \
+            ${PKGDIR}/usr/local/lib/python3.13/site-packages twisted
+          find ${PKGDIR}/usr/local/lib/python3.13/site-packages -maxdepth 1 -mindepth 1 | head
+          # libpython3.13 的动态链接查找路径
+          echo "/usr/local/lib" > ${PKGDIR}/etc/ld.so.conf.d/enigma2-python.conf
+          cat > ${PKGDIR}/DEBIAN/postinst <<'SH'
+          #!/bin/sh
+          set -e
+          ldconfig
+          SH
+          chmod 755 ${PKGDIR}/DEBIAN/postinst
+
           cat > ${PKGDIR}/DEBIAN/control <<EOF
           Package: enigma2-hi3798cv200
           Version: ${E2VER}
           Architecture: arm64
           Maintainer: manhere <manhere@gmail.com>
-          Depends: python3, python3-twisted, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav, libglib2.0-0, libfreetype6, libfribidi0, libsigc++-3.0-0, libdvbsi++, libtuxtxt, libavahi-client3, libwebp7, libgif7, libswscale6
+          Depends: gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav, libglib2.0-0, libfreetype6, libfribidi0, libsigc++-3.0-0, libdvbsi++, libtuxtxt, libavahi-client3, libwebp7, libgif7, libswscale6, zlib1g, libbz2-1.0, liblzma5, libffi8, libreadline8, libsqlite3-0, libncursesw6, libuuid1
           Description: enigma2 (openATV 8.0) for HiSilicon Hi3798CV200 DVBIP-1002
            Built natively on Debian 12 arm64 via GitHub Actions.
           Section: video
