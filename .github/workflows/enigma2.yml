@@ -194,6 +194,21 @@ jobs:
               print('fb.cpp SetMode fallback already patched')
           else:
               raise SystemExit('fb.cpp anchor not found - upstream changed, review needed')
+
+          # AVSwitch.getModeList: DVBIP-1002 的 /proc/stb/video/* 节点全缺时
+          # 向导 port=None，`self.modes[port]` 直接 KeyError 把 WizardVideo
+          # 炸死（2026-10-29 盒子实测）。改为缺端口返回空列表，向导可走完。
+          p = 'lib/python/Components/AVSwitch.py'
+          s = open(p).read()
+          old = 'for mode in self.modes[port]:'
+          new = 'for mode in self.modes.get(port, []):'
+          if old in s:
+              open(p, 'w').write(s.replace(old, new, 1))
+              print('AVSwitch.getModeList KeyError guard patched')
+          elif new in s:
+              print('AVSwitch.getModeList already patched')
+          else:
+              raise SystemExit('AVSwitch.py anchor not found - upstream changed, review needed')
           EOF
 
       - name: Configure
@@ -349,6 +364,11 @@ jobs:
           done
           echo "OpenWebif files: $(find ${OWIFDIR} -type f | wc -l)"
           # 皮肤 XML 内 6 处硬编码 /usr/share/enigma2/MetrixHD → 符号链接兜底
+
+          # ---- tuxtxt 字体（皮肤引用 /usr/share/fonts/tuxtxt.ttf，缺失报
+          # [Skin] Error: Tag 'font' needs an existing filename）----
+          mkdir -p ${PKGDIR}/usr/share/fonts
+          cp -f /tmp/tuxtxt/tuxtxt/font/tuxtxt.ttf ${PKGDIR}/usr/share/fonts/tuxtxt.ttf
 
           cat > ${PKGDIR}/DEBIAN/postinst <<'SH'
           #!/bin/sh
