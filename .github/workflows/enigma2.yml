@@ -94,7 +94,8 @@ jobs:
         run: |
           cd /tmp/tuxtxt/tuxtxt
           autoreconf -fi
-          DVB_API_VERSION=5 ./configure --prefix=/usr
+          # generic：避免默认 dbox2 定义 HAVE_DBOX_HARDWARE（无 avstable 声明，编译失败）
+          DVB_API_VERSION=5 ./configure --prefix=/usr --with-boxtype=generic
           make -j$(nproc) install
           ldconfig
           ls -la /usr/lib/libtuxtxt*
