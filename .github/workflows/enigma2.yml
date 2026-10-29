@@ -127,6 +127,13 @@ jobs:
 
       # ---- enigma2 本体 ----
 
+      # 先 checkout 本仓库到 workspace 根（packaging/enigma.info 等打包资源在此），
+      # openatv/enigma2 再 checkout 到 enigma2/ 子目录，两者不冲突
+      - name: Checkout this repo (packaging files)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
       - name: Checkout enigma2 (openatv master)
         uses: actions/checkout@v4
         with:
