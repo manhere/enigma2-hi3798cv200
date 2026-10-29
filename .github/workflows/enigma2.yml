@@ -425,6 +425,30 @@ jobs:
           else:
               raise SystemExit('SoftwareUpdate.py anchor not found - upstream changed, review needed')
           print('SoftwareUpdate.py short-tuple guard patched')
+
+          # Components/Converter/FrontendInfo.py：getText 对 LOCK/SLOT_NUMBER
+          # 类型断言失败。stock skin_default 的 Satfinder/ScanSetup 用
+          # Pixmap renderer + FrontendInfo>LOCK + ConditionalShowHide 组合，
+          # Pixmap.changed() 的 hasattr(self.source, "text") 会穿透
+          # ConditionalShowHide.__getattr__ 求值 text property → 断言抛出
+          # → 打开 Satfinder 直接 BSOD（2026-10-30 盒子实测）。
+          # lock/slot-number 没有有意义的文本形态，返回空串即可。
+          p = 'lib/python/Components/Converter/FrontendInfo.py'
+          s = open(p).read()
+          old = '\t\tassert self.type not in (self.LOCK, self.SLOT_NUMBER), "the text output of FrontendInfo cannot be used for lock info"\n'
+          new = ('\t\tif self.type in (self.LOCK, self.SLOT_NUMBER):\n'
+                 '\t\t\t# No meaningful text form for lock/slot-number. The stock\n'
+                 '\t\t\t# skin_default attaches Pixmap renderers to FrontendInfo>LOCK\n'
+                 '\t\t\t# conversions; Pixmap.changed() probes hasattr(source, "text")\n'
+                 '\t\t\t# which evaluates this property - raising here BSODs Satfinder.\n'
+                 '\t\t\treturn ""\n')
+          if old in s:
+              open(p, 'w').write(s.replace(old, new, 1))
+          elif 'No meaningful text form for lock/slot-number' in s:
+              print('FrontendInfo.py already patched')
+          else:
+              raise SystemExit('FrontendInfo.py anchor not found - upstream changed, review needed')
+          print('FrontendInfo.py LOCK getText assert defused')
           EOF
 
       - name: Configure
@@ -466,6 +490,13 @@ jobs:
         run: |
           cd enigma2
           make install DESTDIR=/tmp/e2-staging
+          # skin_default 的图标资源（icons/buttons/extensions 等）不在 enigma2
+          # 主仓库，OE 由独立包 openatv/oe-alliance-e2-skindefault 提供；
+          # 缺失时 Satfinder 锁定图标、CableScan scan-c.png 等全部告警。
+          # 只拷资源目录，不覆盖 enigma2 master 的 skin_default.xml。
+          git clone --depth 1 https://github.com/openatv/oe-alliance-e2-skindefault /tmp/skindefault
+          mkdir -p /tmp/e2-staging/usr/local/share/enigma2/skin_default
+          cp -a /tmp/skindefault/skin_default/. /tmp/e2-staging/usr/local/share/enigma2/skin_default/
           find /tmp/e2-staging -maxdepth 3 | head -30
 
       - name: Package .deb
@@ -640,8 +671,9 @@ jobs:
           # （StartEnigma.py: from usb.backend.libusb1 import get_backend）
           # + CT3（OpenWebif Cheetah 模板）
           # + pillow（皮肤渲染器 MetrixHDXPicon: from PIL import Image）
+          # + requests（Tools/Weatherinfo.py MSN 天气：from requests import get）
           /usr/local/bin/python3.13 -m pip install -q --target \
-            ${PKGDIR}/usr/local/lib/python3.13/site-packages "twisted[tls]" pyusb CT3 pillow
+            ${PKGDIR}/usr/local/lib/python3.13/site-packages "twisted[tls]" pyusb CT3 pillow requests
           find ${PKGDIR}/usr/local/lib/python3.13/site-packages -maxdepth 1 -mindepth 1 | head
           # libpython3.13 的动态链接查找路径
           echo "/usr/local/lib" > ${PKGDIR}/etc/ld.so.conf.d/enigma2-python.conf
