@@ -227,8 +227,10 @@ jobs:
 
           # enigma2 启动必需的机器信息文件（OE 构建系统产物，BoxInfo 从这里读
           # machinebuild/socfamily 等；checksum 已按 enigma2 md5 算法生成）
-          mkdir -p ${PKGDIR}/usr/local/lib/enigma2
-          cp ${GITHUB_WORKSPACE}/packaging/enigma.info ${PKGDIR}/usr/local/lib/enigma2/enigma.info
+          # 注意：SystemInfo 用 SCOPE_LIBDIR=${libdir}/ 拼路径，实际查找
+          # ${libdir}/enigma.info（即 /usr/local/lib/enigma.info），
+          # 不是 /usr/local/lib/enigma2/enigma.info（2026-10-29 盒子实测定位）
+          cp ${GITHUB_WORKSPACE}/packaging/enigma.info ${PKGDIR}/usr/local/lib/enigma.info
 
           # ---- 内嵌 Python 3.13 运行时（libpython + stdlib + twisted）----
           mkdir -p ${PKGDIR}/usr/local/lib ${PKGDIR}/etc/ld.so.conf.d
