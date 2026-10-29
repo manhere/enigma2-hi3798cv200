@@ -16,7 +16,6 @@ jobs:
     env:
       KSRC: linux
       DEFCONFIG: dvbip_1002_defconfig
-      KDEB_PKGVERSION: 6.12.dvbip1002.${{ github.run_number }}
 
     steps:
       - name: Install build deps
@@ -24,7 +23,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             bc bison flex libssl-dev libelf-dev dwarves \
-            fakeroot dpkg-dev cpio kmod rsync debhelper
+            fakeroot dpkg-dev cpio kmod rsync debhelper build-essential
 
       - name: Checkout kernel source (HiSilicon-Development/linux-6.12.y)
         uses: actions/checkout@v4
@@ -44,8 +43,11 @@ jobs:
 
       - name: Build .deb packages
         run: |
+          # 版本格式对齐上游 firmware 仓库：6.12.112-YYYYMMDD
+          KDEB_PKGVERSION="$(make -s O=build kernelversion)-$(date +%Y%m%d)"
+          echo "KDEB_PKGVERSION=$KDEB_PKGVERSION"
           make O=build ARCH=arm64 -j$(nproc) bindeb-pkg \
-            KDEB_PKGVERSION=${KDEB_PKGVERSION} \
+            KDEB_PKGVERSION=$KDEB_PKGVERSION \
             KDEB_COMPRESS=xz
           ls -la ../*.deb
 
