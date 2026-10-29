@@ -15,7 +15,8 @@ jobs:
     timeout-minutes: 120
     env:
       KSRC: linux
-      DEFCONFIG: dvbip_1002_defconfig
+      BASE_DEFCONFIG: hi3798cv200_defconfig   # 完整基座配置（478 行，MODULES/HISTB DVB 驱动）
+      FRAGMENT: dvbip_1002_defconfig          # 1002 板差异片段（LOCALVERSION + RTL8211F LED）
 
     steps:
       - name: Install build deps
@@ -32,11 +33,13 @@ jobs:
           ref: main
           fetch-depth: 1
 
-      - name: Configure (dvbip_1002_defconfig)
+      - name: Configure (hi3798cv200 base + dvbip_1002 fragment)
         run: |
-          make O=build ARCH=arm64 ${DEFCONFIG}
+          make O=build ARCH=arm64 ${BASE_DEFCONFIG}
+          ./scripts/kconfig/merge_config.sh -m -O build build/.config arch/arm64/configs/${FRAGMENT}
+          make O=build ARCH=arm64 olddefconfig
           # 打印关键配置便于日志排查
-          grep -E "CONFIG_(HISI|HISTB|DVB|MEDIA|FB)" build/.config | head -80 || true
+          grep -E "CONFIG_(LOCALVERSION|MODULES|HISTB|DVB_HISTB|MEDIA)" build/.config | head -40
 
       - name: Build kernel + modules
         run: make O=build ARCH=arm64 -j$(nproc) all
