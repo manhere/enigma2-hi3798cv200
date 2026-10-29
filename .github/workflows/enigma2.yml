@@ -87,6 +87,8 @@ jobs:
             curl -fsSL -o /usr/include/linux/dvb/$f \
               https://raw.githubusercontent.com/HiSilicon-Development/linux-6.12.y/main/include/uapi/linux/dvb/$f
           done
+          # 原始 uapi 头含内核态注解 __user，等价 headers_install 剥离
+          sed -i 's/\b__user\b//g' /usr/include/linux/dvb/*.h
 
       # ---- enigma2 本体 ----
 
