@@ -244,9 +244,10 @@ jobs:
                  ${PKGDIR}/usr/local/lib/python3.13/site-packages/pip \
                  ${PKGDIR}/usr/local/lib/python3.13/site-packages/setuptools \
                  ${PKGDIR}/usr/local/lib/python3.13/site-packages/pkg_resources
-          # enigma2 运行期依赖 twisted（含全部纯 Python 依赖）
+          # enigma2 运行期依赖 twisted（含全部纯 Python 依赖）+ pyusb
+          # （StartEnigma.py: from usb.backend.libusb1 import get_backend）
           /usr/local/bin/python3.13 -m pip install -q --target \
-            ${PKGDIR}/usr/local/lib/python3.13/site-packages twisted
+            ${PKGDIR}/usr/local/lib/python3.13/site-packages twisted pyusb
           find ${PKGDIR}/usr/local/lib/python3.13/site-packages -maxdepth 1 -mindepth 1 | head
           # libpython3.13 的动态链接查找路径
           echo "/usr/local/lib" > ${PKGDIR}/etc/ld.so.conf.d/enigma2-python.conf
