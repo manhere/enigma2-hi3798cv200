@@ -247,6 +247,9 @@ jobs:
           #!/bin/sh
           set -e
           ldconfig
+          # enigma2 假定 OE 镜像的 opkg 包管理布局（International/SystemInfo 等直接列目录），
+          # Debian 是 dpkg——补空目录消除启动 FileNotFoundError
+          mkdir -p /var/lib/opkg/info /var/lib/opkg/lists /etc/opkg
           SH
           chmod 755 ${PKGDIR}/DEBIAN/postinst
 
