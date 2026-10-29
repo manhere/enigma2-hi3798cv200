@@ -398,6 +398,22 @@ jobs:
           cd enigma2
           make -j$(nproc)
 
+      - name: Build socketdaemon
+        run: |
+          # openatv NetworkManager(2025+) 的链路状态数据源：socketdaemon
+          # 监听 rtnetlink + ethtool ioctl，写 /var/run/netinfo 和
+          # daemon_net.socket。主线内核盒子没有 OE 厂商层提供该 daemon，
+          # 不带它 NetworkManager 的 netInfo.link 恒 False → UI 一律显示
+          # “网线未连接”（2026-10-30 盒子实测，实际网络正常）。
+          # 单文件 C 程序，仅依赖 pthread，arm64 runner 原生编译。
+          git clone --depth 1 https://github.com/openatv/socketdaemon /tmp/socketdaemon
+          cd /tmp/socketdaemon
+          autoreconf -fi
+          ./configure --prefix=/usr/local
+          make -j$(nproc)
+          make install DESTDIR=/tmp/sd-staging
+          ls -la /tmp/sd-staging/usr/local/bin/
+
       - name: Stage install
         run: |
           cd enigma2
@@ -443,6 +459,8 @@ jobs:
           PKGDIR=$GITHUB_WORKSPACE/enigma2-hi3798cv200_${E2VER}_arm64
           mkdir -p ${PKGDIR}/DEBIAN
           cp -a /tmp/e2-staging/* ${PKGDIR}/
+          # ---- socketdaemon（NetworkManager 链路状态数据源）----
+          cp -a /tmp/sd-staging/usr/local/bin/socketdaemon ${PKGDIR}/usr/local/bin/socketdaemon
 
           # enigma2 启动必需的机器信息文件（OE 构建系统产物，BoxInfo 从这里读
           # machinebuild/socfamily 等；checksum 已按 enigma2 md5 算法生成）
@@ -508,6 +526,10 @@ jobs:
           # OE enigma2.sh equivalent: UI supervisor loop driven by
           # quitMainloop exit codes (Screens/Standby.py QUIT_*).
           BIN=/usr/local/bin/enigma2.bin
+          # NetworkManager 的 /var/run/netinfo 数据源（链路/网速/流量/因特网
+          # 检测），E2 启动前拉起；daemon 自身绑定固定 socket，重复启动
+          # 会自行退出，无重复实例风险。
+          start-stop-daemon -S -b -x /usr/local/bin/socketdaemon 2>/dev/null
           while :; do
               ${BIN} "$@"
               ret=$?
@@ -527,6 +549,7 @@ jobs:
                       ;;
               esac
           done
+          start-stop-daemon -K -x /usr/local/bin/socketdaemon 2>/dev/null
           SH
           chmod 755 ${PKGDIR}/usr/local/bin/enigma2
           # 瘦身：测试套件/构建配置/备件不需要
