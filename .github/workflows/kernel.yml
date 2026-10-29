@@ -49,12 +49,13 @@ jobs:
           make O=build ARCH=arm64 -j$(nproc) bindeb-pkg \
             KDEB_PKGVERSION=$KDEB_PKGVERSION \
             KDEB_COMPRESS=xz
-          ls -la ../*.deb
+          # O=build 时 .deb 生成在源码目录（workspace 根）
+          ls -la ./*.deb
 
       - name: Upload .deb artifacts
         uses: actions/upload-artifact@v4
         with:
           name: kernel-dvbip1002-debs
           path: |
-            ../*.deb
+            linux-*.deb
           if-no-files-found: error
