@@ -377,6 +377,54 @@ jobs:
               s = s.replace(anchor, method, 1)
               open(p, 'w').write(s)
           print('NimManager.py /dev/dvb fallback NIM enumeration patched')
+
+          # Screens/Information.py:1357 信息界面硬编码 Popen("/usr/bin/opkg",
+          # "list-installed")——Debian 盒子无 opkg，直接 FileNotFoundError 崩溃
+          # （2026-10-30 盒子实测）。opkg 缺失时回退 dpkg-query，输出格式对齐
+          # opkg 的 "pkg - version"（findPackageRevision 按 "-" 切分逻辑不变）；
+          # 两者都没有则显示 "not found" 而非崩溃。
+          p = 'lib/python/Screens/Information.py'
+          s = open(p).read()
+          old = ('\t\t\tprocess = Popen(("/usr/bin/opkg", "list-installed"), stdout=PIPE, stderr=PIPE, universal_newlines=True)\n'
+                 '\t\t\tstdout, stderr = process.communicate()\n'
+                 '\t\t\tif process.returncode == 0:\n')
+          new = ('\t\t\tif isfile("/usr/bin/opkg"):\n'
+                 '\t\t\t\tprocess = Popen(("/usr/bin/opkg", "list-installed"), stdout=PIPE, stderr=PIPE, universal_newlines=True)\n'
+                 '\t\t\t\tstdout, stderr = process.communicate()\n'
+                 '\t\t\telif isfile("/usr/bin/dpkg-query"):\n'
+                 '\t\t\t\t# Debian box: no opkg; dpkg-query with opkg-style output ("pkg - version").\n'
+                 '\t\t\t\tprocess = Popen(("/usr/bin/dpkg-query", "-W", "-f=${binary:Package} - ${Version}\\n"), stdout=PIPE, stderr=PIPE, universal_newlines=True)\n'
+                 '\t\t\t\tstdout, stderr = process.communicate()\n'
+                 '\t\t\telse:\n'
+                 '\t\t\t\tprocess = None\n'
+                 '\t\t\t\tstdout, stderr = "", ""\n'
+                 '\t\t\tif process and process.returncode == 0:\n')
+          if old in s:
+              open(p, 'w').write(s.replace(old, new, 1))
+          elif 'dpkg-query' in s:
+              print('Information.py already patched')
+          else:
+              raise SystemExit('Information.py opkg anchor not found - upstream changed, review needed')
+          print('Information.py opkg->dpkg-query fallback patched')
+
+          # Screens/SoftwareUpdate.py:214 无 opkg 时 getFetchedList 返回短元组，
+          # fetched[1] 直接 IndexError → FATAL SIGNAL（2026-10-30 盒子实测）。
+          # 跳过字段不足的条目，界面落入 noupdate/error 状态而非崩溃。
+          p = 'lib/python/Screens/SoftwareUpdate.py'
+          s = open(p).read()
+          old = ('\t\t\t\t\tfor fetched in fetchedList:\n'
+                 '\t\t\t\t\t\toldVer = fetched[1] if fetched[1] else _("Current version unknown")\n')
+          new = ('\t\t\t\t\tfor fetched in fetchedList:\n'
+                 '\t\t\t\t\t\tif len(fetched) < 3:\n'
+                 '\t\t\t\t\t\t\tcontinue\n'
+                 '\t\t\t\t\t\toldVer = fetched[1] if fetched[1] else _("Current version unknown")\n')
+          if old in s:
+              open(p, 'w').write(s.replace(old, new, 1))
+          elif 'len(fetched) < 3' in s:
+              print('SoftwareUpdate.py already patched')
+          else:
+              raise SystemExit('SoftwareUpdate.py anchor not found - upstream changed, review needed')
+          print('SoftwareUpdate.py short-tuple guard patched')
           EOF
 
       - name: Configure
@@ -506,6 +554,33 @@ jobs:
           done
           echo "locale packages: $(ls ${PKGDIR}/var/lib/opkg/info | wc -l)"
           ls ${PKGDIR}/var/lib/opkg/info | head -8
+
+          # ---- 频率表（OE 发行层文件，enigma2 仓库不含）----
+          # C++ db.cpp 硬编码 /etc/enigma2/*.xml（我们已把 /etc/enigma2 符号
+          # 链接到 /usr/local/etc/enigma2）。缺失时 cablesList 为空，DVB-C
+          # 搜台界面 ScanSetup 读 scan_provider.index 直接 IndexError
+          # （2026-10-30 盒子实测）；satellites.xml 缺失则无法配置/搜索卫星。
+          git clone --depth 1 https://github.com/oe-alliance/oe-alliance-tuxbox-common /tmp/tuxbox-common
+          mkdir -p ${PKGDIR}/usr/local/etc/enigma2
+          for x in satellites cables terrestrial atsc; do
+            cp -f /tmp/tuxbox-common/src/$x.xml ${PKGDIR}/usr/local/etc/enigma2/$x.xml
+          done
+          # Components/Timezones.py 硬编码 /etc/timezone.xml
+          mkdir -p ${PKGDIR}/etc
+          cp -f /tmp/tuxbox-common/src/timezone.xml ${PKGDIR}/etc/timezone.xml
+
+          # ---- OE 发行层 Python 模块（enigma2 源码 import 但不在仓库内）----
+          # Tools/Weatherinfo.py：MyMetrixLite 皮肤插件依赖，缺失即插件加载失败
+          git clone --depth 1 https://github.com/openatv/WeatherInfo /tmp/WeatherInfo
+          mkdir -p ${PKGDIR}/usr/local/lib/enigma2/python/Tools
+          cp -f /tmp/WeatherInfo/Weatherinfo.py ${PKGDIR}/usr/local/lib/enigma2/python/Tools/Weatherinfo.py
+          # process.py：Screens/NetworkServices.py "from process import ProcessList"
+          # （OE python3-process 包，缺失时进程列表入口崩溃）
+          curl -sf -o ${PKGDIR}/usr/local/lib/enigma2/python/process.py \
+            https://raw.githubusercontent.com/oe-alliance/oe-alliance-core/master/meta-oe/recipes-devtools/python/python3-process/process.py
+          ls -la ${PKGDIR}/usr/local/etc/enigma2/*.xml ${PKGDIR}/etc/timezone.xml \
+                 ${PKGDIR}/usr/local/lib/enigma2/python/Tools/Weatherinfo.py \
+                 ${PKGDIR}/usr/local/lib/enigma2/python/process.py
 
           # ---- 内嵌 Python 3.13 运行时（libpython + stdlib + twisted）----
           mkdir -p ${PKGDIR}/usr/local/lib ${PKGDIR}/etc/ld.so.conf.d
