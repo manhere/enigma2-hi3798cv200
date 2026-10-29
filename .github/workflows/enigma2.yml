@@ -225,6 +225,11 @@ jobs:
           mkdir -p ${PKGDIR}/DEBIAN
           cp -a /tmp/e2-staging/* ${PKGDIR}/
 
+          # enigma2 启动必需的机器信息文件（OE 构建系统产物，BoxInfo 从这里读
+          # machinebuild/socfamily 等；checksum 已按 enigma2 md5 算法生成）
+          mkdir -p ${PKGDIR}/usr/local/lib/enigma2
+          cp ${GITHUB_WORKSPACE}/packaging/enigma.info ${PKGDIR}/usr/local/lib/enigma2/enigma.info
+
           # ---- 内嵌 Python 3.13 运行时（libpython + stdlib + twisted）----
           mkdir -p ${PKGDIR}/usr/local/lib ${PKGDIR}/etc/ld.so.conf.d
           cp -a /usr/local/lib/libpython3.13.so* ${PKGDIR}/usr/local/lib/
