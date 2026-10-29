@@ -1,0 +1,128 @@
+name: enigma2-debian12-arm64
+
+# openATV enigma2 (master) -> Debian 12 (bookworm) arm64，原生 arm64 runner 构建，产出 .deb
+on:
+  workflow_dispatch:
+    inputs:
+      boxtype:
+        description: "enigma2 BOXTYPE (configure --with-boxtype)"
+        default: "u5"
+      machinebuild:
+        description: "enigma2 MACHINEBUILD (configure --with-machinebuild)"
+        default: "u5"
+  push:
+    paths:
+      - ".github/workflows/enigma2.yml"
+  schedule:
+    - cron: "0 4 * * 1" # 每周一 UTC 04:00 跟踪上游 master
+
+jobs:
+  enigma2:
+    runs-on: ubuntu-24.04-arm
+    container: debian:12
+    timeout-minutes: 120
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      BOXTYPE: ${{ github.event.inputs.boxtype || 'u5' }}
+      MACHINEBUILD: ${{ github.event.inputs.machinebuild || 'u5' }}
+      E2VER: 8.0.dvbip1002.${{ github.run_number }}
+
+    steps:
+      - name: Install build deps (Debian 12)
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential autoconf automake autoconf-archive libtool pkg-config \
+            gettext bison flex swig git curl ca-certificates xz-utils \
+            python3 python3-dev python3-setuptools \
+            meson ninja-build \
+            libglib2.0-dev libfreetype-dev libfribidi-dev libpng-dev libxml2-dev \
+            libssl-dev libcurl4-openssl-dev libavahi-client-dev \
+            libjpeg-dev libgif-dev libwebp-dev libswscale-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+
+      # ---- Debian 12 缺失的依赖：源码补编 ----
+
+      - name: Build sigc++-3.x (not in bookworm)
+        run: |
+          git clone --depth 1 --branch 3.2.0 https://github.com/libsigcplusplus/libsigcplusplus.git /tmp/sigc
+          cd /tmp/sigc
+          meson setup build --prefix=/usr -Dbuild-examples=false -Dbuild-tests=false
+          ninja -C build install
+          ldconfig
+
+      - name: Build libdvbsi++ (OpenVisionE2)
+        run: |
+          git clone --depth 1 https://github.com/OpenVisionE2/libdvbsi.git /tmp/libdvbsi
+          cd /tmp/libdvbsi
+          ./autogen.sh
+          ./configure --prefix=/usr
+          make -j$(nproc) install
+          ldconfig
+
+      - name: Build libtuxtxt (OpenPLi, provides tuxbox-tuxtxt)
+        run: |
+          git clone --depth 1 https://github.com/OpenPLi/tuxtxt.git /tmp/tuxtxt
+          cd /tmp/tuxtxt/libtuxtxt
+          autoreconf -fi
+          ./configure --prefix=/usr
+          make -j$(nproc) install
+          ldconfig
+          pkg-config --modversion tuxbox-tuxtxt
+
+      # ---- enigma2 本体 ----
+
+      - name: Checkout enigma2 (openatv master)
+        uses: actions/checkout@v4
+        with:
+          repository: openatv/enigma2
+          ref: master
+          fetch-depth: 1
+          path: enigma2
+
+      - name: Configure
+        run: |
+          cd enigma2
+          ./autogen.sh
+          ./configure \
+            --with-gstversion=1.0 \
+            --with-boxtype=${BOXTYPE} \
+            --with-machinebuild=${MACHINEBUILD} \
+            --with-e2rev=${E2VER}
+
+      - name: Build
+        run: |
+          cd enigma2
+          make -j$(nproc)
+
+      - name: Stage install
+        run: |
+          cd enigma2
+          make install DESTDIR=/tmp/e2-staging
+          find /tmp/e2-staging -maxdepth 3 | head -30
+
+      - name: Package .deb
+        run: |
+          PKGDIR=/tmp/enigma2-hi3798cv200_${E2VER}_arm64
+          mkdir -p ${PKGDIR}/DEBIAN
+          cp -a /tmp/e2-staging/* ${PKGDIR}/
+          cat > ${PKGDIR}/DEBIAN/control <<EOF
+          Package: enigma2-hi3798cv200
+          Version: ${E2VER}
+          Architecture: arm64
+          Maintainer: manhere <manhere@gmail.com>
+          Depends: python3, python3-twisted, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav, libglib2.0-0, libfreetype6, libfribidi0, libsigc++-3.0-0, libdvbsi++, libtuxtxt, libavahi-client3, libwebp7, libgif7, libswscale6
+          Description: enigma2 (openATV 8.0) for HiSilicon Hi3798CV200 DVBIP-1002
+           Built natively on Debian 12 arm64 via GitHub Actions.
+          Section: video
+          Priority: optional
+          EOF
+          dpkg-deb --build --root-owner-group ${PKGDIR}
+          ls -la /*.deb
+
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: enigma2-debian12-arm64
+          path: /enigma2-hi3798cv200*.deb
+          if-no-files-found: error

@@ -1,0 +1,58 @@
+name: kernel-dvbip1002
+
+# HiSilicon linux-6.12.y -> Hi3798CV200 DVBIP-1002 内核 + 模块，产出 arm64 .deb
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/kernel.yml"
+  schedule:
+    - cron: "0 3 * * 1" # 每周一 UTC 03:00 跟踪上游 main
+
+jobs:
+  kernel:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    env:
+      KSRC: linux
+      DEFCONFIG: dvbip_1002_defconfig
+      KDEB_PKGVERSION: 6.12.dvbip1002.${{ github.run_number }}
+
+    steps:
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison flex libssl-dev libelf-dev dwarves \
+            fakeroot dpkg-dev cpio kmod rsync
+
+      - name: Checkout kernel source (HiSilicon-Development/linux-6.12.y)
+        uses: actions/checkout@v4
+        with:
+          repository: HiSilicon-Development/linux-6.12.y
+          ref: main
+          fetch-depth: 1
+
+      - name: Configure (dvbip_1002_defconfig)
+        run: |
+          make O=build ARCH=arm64 ${DEFCONFIG}
+          # 打印关键配置便于日志排查
+          grep -E "CONFIG_(HISI|HISTB|DVB|MEDIA|FB)" build/.config | head -80 || true
+
+      - name: Build kernel + modules
+        run: make O=build ARCH=arm64 -j$(nproc) all
+
+      - name: Build .deb packages
+        run: |
+          make O=build ARCH=arm64 -j$(nproc) bindeb-pkg \
+            KDEB_PKGVERSION=${KDEB_PKGVERSION} \
+            KDEB_COMPRESS=xz
+          ls -la ../*.deb
+
+      - name: Upload .deb artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-dvbip1002-debs
+          path: |
+            ../*.deb
+          if-no-files-found: error
