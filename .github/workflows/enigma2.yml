@@ -65,12 +65,14 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/OpenPLi/tuxtxt.git /tmp/tuxtxt
           cd /tmp/tuxtxt/libtuxtxt
-          # libtuxtxt 需要 tuxbox-cvs 的 libtuxbox 头文件（header-only）
+          # libtuxtxt 需要 tuxbox-cvs 的头文件：libtuxbox/tuxbox.h + driver/include/tuxbox/*（header-only）
           curl -fsSL -o /usr/include/tuxbox.h \
             https://raw.githubusercontent.com/OpenPLi/OpenPLi-1/master/cdk/apps/tuxbox/libtuxbox/tuxbox.h
           mkdir -p /usr/include/tuxbox
-          curl -fsSL -o /usr/include/tuxbox/info.h \
-            https://raw.githubusercontent.com/OpenPLi/OpenPLi-1/master/cdk/driver/include/tuxbox/info.h
+          for f in hardware_dbox2.h hardware_dreambox.h hardware_pci.h info.h info_dbox2.h kernel.h; do
+            curl -fsSL -o /usr/include/tuxbox/$f \
+              https://raw.githubusercontent.com/OpenPLi/OpenPLi-1/master/cdk/driver/include/tuxbox/$f
+          done
           autoreconf -fi
           # tuxbox 宏的 DVB_API_VERSION cpp 提取在容器内失败，直接注入版本跳过检测
           DVB_API_VERSION=5 ./configure --prefix=/usr
