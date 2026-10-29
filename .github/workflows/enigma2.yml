@@ -66,7 +66,8 @@ jobs:
           git clone --depth 1 https://github.com/OpenPLi/tuxtxt.git /tmp/tuxtxt
           cd /tmp/tuxtxt/libtuxtxt
           autoreconf -fi
-          ./configure --prefix=/usr
+          # tuxbox 宏的 DVB_API_VERSION cpp 提取在容器内失败，直接注入版本跳过检测
+          DVB_API_VERSION=5 ./configure --prefix=/usr
           make -j$(nproc) install
           ldconfig
           pkg-config --modversion tuxbox-tuxtxt
