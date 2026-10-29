@@ -268,6 +268,36 @@ jobs:
           # 不是 /usr/local/lib/enigma2/enigma.info（2026-10-29 盒子实测定位）
           cp ${GITHUB_WORKSPACE}/packaging/enigma.info ${PKGDIR}/usr/local/lib/enigma.info
 
+          # ---- 语言包（openATV International 组件的识别机制）----
+          # Components/International.py 通过扫描 /var/lib/opkg/info/ 下的
+          # enigma2-locale-*.control 文件名生成语言列表（OE 镜像里每种语言
+          # 是一个 opkg 包）；没有 control 文件时语言向导只剩内置 en_US。
+          # 翻译本体 po/<lang>/LC_MESSAGES/enigma2.mo 由 make install 装到
+          # ${pkgdatadir}/po/（/usr/local/share/enigma2/po/），随 staging 一起打包。
+          ls ${PKGDIR}/usr/local/share/enigma2/po/ | head -8 || true
+          if [ ! -f ${PKGDIR}/usr/local/share/enigma2/po/zh_CN/LC_MESSAGES/enigma2.mo ]; then
+            # 兜底：staging 缺 .mo 时从源码 po 目录现场编译
+            mkdir -p ${PKGDIR}/usr/local/share/enigma2/po
+            for p in enigma2/po/*.po; do
+              lang=$(basename "$p" .po)
+              mkdir -p ${PKGDIR}/usr/local/share/enigma2/po/$lang/LC_MESSAGES
+              msgfmt -o ${PKGDIR}/usr/local/share/enigma2/po/$lang/LC_MESSAGES/enigma2.mo "$p"
+            done
+          fi
+          mkdir -p ${PKGDIR}/var/lib/opkg/info
+          for d in ${PKGDIR}/usr/local/share/enigma2/po/*/; do
+            lang=$(basename "$d")
+            [ -f "$d/LC_MESSAGES/enigma2.mo" ] || continue
+            # 包名规则：小写、下划线转连字符（zh_CN -> zh-cn，en_GB -> en-gb），
+            # International.packageToLocales 会把 zh-cn 还原为 locale zh_CN
+            pkg=$(echo "$lang" | tr 'A-Z_' 'a-z-')
+            printf 'Package: enigma2-locale-%s\nVersion: %s\nArchitecture: all\nMaintainer: manhere <manhere@gmail.com>\nDescription: enigma2 locale %s\n' \
+              "$pkg" "${E2VER}" "$lang" \
+              > ${PKGDIR}/var/lib/opkg/info/enigma2-locale-${pkg}.control
+          done
+          echo "locale packages: $(ls ${PKGDIR}/var/lib/opkg/info | wc -l)"
+          ls ${PKGDIR}/var/lib/opkg/info | head -8
+
           # ---- 内嵌 Python 3.13 运行时（libpython + stdlib + twisted）----
           mkdir -p ${PKGDIR}/usr/local/lib ${PKGDIR}/etc/ld.so.conf.d
           cp -a /usr/local/lib/libpython3.13.so* ${PKGDIR}/usr/local/lib/
