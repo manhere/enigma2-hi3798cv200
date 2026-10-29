@@ -361,8 +361,10 @@ jobs:
           # enigma2 运行期依赖：twisted[tls]（含 pyopenssl/service_identity/idna
           # 等 TLS 全链，Tools/Downloader.py 需要）+ pyusb
           # （StartEnigma.py: from usb.backend.libusb1 import get_backend）
+          # + CT3（OpenWebif Cheetah 模板）
+          # + pillow（皮肤渲染器 MetrixHDXPicon: from PIL import Image）
           /usr/local/bin/python3.13 -m pip install -q --target \
-            ${PKGDIR}/usr/local/lib/python3.13/site-packages "twisted[tls]" pyusb CT3
+            ${PKGDIR}/usr/local/lib/python3.13/site-packages "twisted[tls]" pyusb CT3 pillow
           find ${PKGDIR}/usr/local/lib/python3.13/site-packages -maxdepth 1 -mindepth 1 | head
           # libpython3.13 的动态链接查找路径
           echo "/usr/local/lib" > ${PKGDIR}/etc/ld.so.conf.d/enigma2-python.conf
@@ -412,6 +414,15 @@ jobs:
             rm -rf /usr/share/enigma2
             ln -sfn /usr/local/share/enigma2 /usr/share/enigma2
           fi
+          # 上游 Python 源码同样硬编码 /etc/enigma2/（ChannelSelection.py:1479
+          # listdir("/etc/enigma2/")、resumepoints.pkl、epg.dat 等）——
+          # 链到真实配置目录（--prefix=/usr/local → sysconfdir 偏差一次纠正）
+          if [ ! -L /etc/enigma2 ]; then
+            rm -rf /etc/enigma2
+            ln -sfn /usr/local/etc/enigma2 /etc/enigma2
+          fi
+          # UsageConfig 启动时写 /etc/tuxtxt/tuxtxt2.conf（tuxtxt 字幕配置）
+          mkdir -p /etc/tuxtxt
           SH
           chmod 755 ${PKGDIR}/DEBIAN/postinst
 
