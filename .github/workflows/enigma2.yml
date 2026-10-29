@@ -368,6 +368,38 @@ jobs:
           # 无解释器无法做诊断/解包；一起打包）
           mkdir -p ${PKGDIR}/usr/local/bin
           cp -a /usr/local/bin/python3.13 ${PKGDIR}/usr/local/bin/python3.13
+          # enigma2 裸二进制改为 .bin + 同名管理脚本（OE enigma2.sh 语义）：
+          # 设置界面“重启 E2”调 quitMainloop(3) 后进程直接退出，必须由
+          # 外层循环按退出码拉起（Screens/Standby.py: 1=关机 2=整机重启
+          # 3=重启UI 5=出错重启 15/16/17=Kodi等 42-44=升级 45=WOL关机）；
+          # 关机/重启同样由退出码驱动。
+          mv ${PKGDIR}/usr/local/bin/enigma2 ${PKGDIR}/usr/local/bin/enigma2.bin
+          cat > ${PKGDIR}/usr/local/bin/enigma2 <<'SH'
+          #!/bin/sh
+          # OE enigma2.sh equivalent: UI supervisor loop driven by
+          # quitMainloop exit codes (Screens/Standby.py QUIT_*).
+          BIN=/usr/local/bin/enigma2.bin
+          while :; do
+              ${BIN} "$@"
+              ret=$?
+              case $ret in
+                  1|45)                    # QUIT_SHUTDOWN / QUIT_WOLSHUTDOWN
+                      poweroff 2>/dev/null || halt
+                      break
+                      ;;
+                  2)                       # QUIT_REBOOT
+                      reboot
+                      break
+                      ;;
+                  3|5|6|15|16|17|42|43|44) # restart UI variants incl. error restart
+                      ;;
+                  *)                       # clean/unknown exit: leave it dead
+                      break
+                      ;;
+              esac
+          done
+          SH
+          chmod 755 ${PKGDIR}/usr/local/bin/enigma2
           # 瘦身：测试套件/构建配置/备件不需要
           rm -rf ${PKGDIR}/usr/local/lib/python3.13/test \
                  ${PKGDIR}/usr/local/lib/python3.13/idlelib \
