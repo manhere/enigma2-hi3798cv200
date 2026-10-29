@@ -59,6 +59,8 @@ jobs:
           ./autogen.sh
           ./configure --prefix=/usr
           make -j$(nproc) install
+          # staging：供后续打包 libdvbsi++ 运行库 .deb
+          make install DESTDIR=$GITHUB_WORKSPACE/.pkg-libdvbsi
           ldconfig
 
       - name: Build libtuxtxt (OpenPLi, provides tuxbox-tuxtxt)
@@ -78,6 +80,8 @@ jobs:
           # tuxbox 宏的 DVB_API_VERSION cpp 提取在容器内失败，直接注入版本跳过检测
           DVB_API_VERSION=5 ./configure --prefix=/usr
           make -j$(nproc) install
+          # staging：供后续打包 libtuxtxt 运行库 .deb
+          make install DESTDIR=$GITHUB_WORKSPACE/.pkg-libtuxtxt
           ldconfig
           pkg-config --modversion tuxbox-tuxtxt
 
@@ -98,6 +102,8 @@ jobs:
           # generic：避免默认 dbox2 定义 HAVE_DBOX_HARDWARE（无 avstable 声明，编译失败）
           DVB_API_VERSION=5 ./configure --prefix=/usr --with-boxtype=generic
           make -j$(nproc) install
+          # libtuxtxt32bpp 并入 libtuxtxt 运行库包
+          make install DESTDIR=$GITHUB_WORKSPACE/.pkg-libtuxtxt
           ldconfig
           ls -la /usr/lib/libtuxtxt*
 
@@ -164,6 +170,39 @@ jobs:
       - name: Package .deb
         run: |
           # 打包到 $GITHUB_WORKSPACE（容器挂载卷），upload-artifact 才能取到
+
+          # ---- 运行库：libdvbsi++ ----
+          DVBDIR=$GITHUB_WORKSPACE/.pkg-libdvbsi
+          mkdir -p ${DVBDIR}/DEBIAN
+          cat > ${DVBDIR}/DEBIAN/control <<EOF
+          Package: libdvbsi++
+          Version: ${E2VER}
+          Architecture: arm64
+          Maintainer: manhere <manhere@gmail.com>
+          Depends: libstdc++6
+          Description: DVB Service Information library (OpenVisionE2, runtime)
+           Built natively on Debian 12 arm64 via GitHub Actions.
+          Section: libs
+          Priority: optional
+          EOF
+          dpkg-deb --build --root-owner-group ${DVBDIR} $GITHUB_WORKSPACE/libdvbsi++_${E2VER}_arm64.deb
+
+          # ---- 运行库：libtuxtxt（含 libtuxtxt32bpp）----
+          TXTDIR=$GITHUB_WORKSPACE/.pkg-libtuxtxt
+          mkdir -p ${TXTDIR}/DEBIAN
+          cat > ${TXTDIR}/DEBIAN/control <<EOF
+          Package: libtuxtxt
+          Version: ${E2VER}
+          Architecture: arm64
+          Maintainer: manhere <manhere@gmail.com>
+          Description: Teletext library and 32bpp renderer (oe-alliance, runtime)
+           Built natively on Debian 12 arm64 via GitHub Actions.
+          Section: libs
+          Priority: optional
+          EOF
+          dpkg-deb --build --root-owner-group ${TXTDIR} $GITHUB_WORKSPACE/libtuxtxt_${E2VER}_arm64.deb
+
+          # ---- enigma2 本体 ----
           PKGDIR=$GITHUB_WORKSPACE/enigma2-hi3798cv200_${E2VER}_arm64
           mkdir -p ${PKGDIR}/DEBIAN
           cp -a /tmp/e2-staging/* ${PKGDIR}/
@@ -185,5 +224,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: enigma2-debian12-arm64
-          path: enigma2-hi3798cv200*.deb
+          path: |
+            enigma2-hi3798cv200*.deb
+            libdvbsi++*.deb
+            libtuxtxt*.deb
           if-no-files-found: error
