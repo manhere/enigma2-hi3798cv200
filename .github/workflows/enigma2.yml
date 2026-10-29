@@ -308,72 +308,72 @@ jobs:
               if s.count(anchor) != 1:
                   raise SystemExit('NimManager.py method anchor not unique - upstream changed, review needed')
               method = '''
-	def enumDevDvbFrontends(self):
-		# Hi3798CV200: mainline DVB drivers (histb-dmx + mxl214) expose only
-		# standard /dev/dvb/adapterN/frontend0 and no /proc/bus/nim_sockets
-		# (dreambox-centric interface no mainline driver provides). Enumerate
-		# frontends via FE_GET_INFO and return entries in the same format the
-		# /proc parser produces. Returns None when the proc file exists so it
-		# keeps priority.
-		if exists("/proc/bus/nim_sockets"):
-			return None
-		if not exists("/dev/dvb"):
-			return {}
-		import ctypes
-		import fcntl
-		import os
+          	def enumDevDvbFrontends(self):
+          		# Hi3798CV200: mainline DVB drivers (histb-dmx + mxl214) expose only
+          		# standard /dev/dvb/adapterN/frontend0 and no /proc/bus/nim_sockets
+          		# (dreambox-centric interface no mainline driver provides). Enumerate
+          		# frontends via FE_GET_INFO and return entries in the same format the
+          		# /proc parser produces. Returns None when the proc file exists so it
+          		# keeps priority.
+          		if exists("/proc/bus/nim_sockets"):
+          			return None
+          		if not exists("/dev/dvb"):
+          			return {}
+          		import ctypes
+          		import fcntl
+          		import os
 
-		class FrontendInfo(ctypes.Structure):
-			_fields_ = [
-				("name", ctypes.c_char * 128),
-				("type", ctypes.c_int),
-				("frequency_min", ctypes.c_uint32),
-				("frequency_max", ctypes.c_uint32),
-				("frequency_stepsize", ctypes.c_uint32),
-				("frequency_tolerance", ctypes.c_uint32),
-				("symbol_rate_min", ctypes.c_uint32),
-				("symbol_rate_max", ctypes.c_uint32),
-				("symbol_rate_tolerance", ctypes.c_uint32),
-				("notifier_delay", ctypes.c_uint32),
-				("caps", ctypes.c_uint32),
-			]
+          		class FrontendInfo(ctypes.Structure):
+          			_fields_ = [
+          				("name", ctypes.c_char * 128),
+          				("type", ctypes.c_int),
+          				("frequency_min", ctypes.c_uint32),
+          				("frequency_max", ctypes.c_uint32),
+          				("frequency_stepsize", ctypes.c_uint32),
+          				("frequency_tolerance", ctypes.c_uint32),
+          				("symbol_rate_min", ctypes.c_uint32),
+          				("symbol_rate_max", ctypes.c_uint32),
+          				("symbol_rate_tolerance", ctypes.c_uint32),
+          				("notifier_delay", ctypes.c_uint32),
+          				("caps", ctypes.c_uint32),
+          			]
 
-		FE_GET_INFO = 0x80A86F3D  # _IOR('o', 61, struct dvb_frontend_info)
-		typeMap = {0: "DVB-S", 1: "DVB-C", 2: "DVB-T", 3: "ATSC"}
-		entries = {}
-		frontendIndex = 0
-		for adapter in sorted(os.listdir("/dev/dvb")):
-			if not adapter.startswith("adapter"):
-				continue
-			fePath = join("/dev/dvb", adapter, "frontend0")
-			if not exists(fePath):
-				continue
-			try:
-				fd = os.open(fePath, os.O_RDONLY)
-				try:
-					info = FrontendInfo()
-					fcntl.ioctl(fd, FE_GET_INFO, info)
-				finally:
-					os.close(fd)
-				feType = typeMap.get(info.type)
-				if feType is None:
-					print(f"[NimManager] {fePath}: unsupported FE type {info.type}, skipped")
-					continue
-				feName = info.name.decode("utf-8", "replace").strip() or fePath
-				entries[frontendIndex] = {
-					"type": feType,
-					"name": feName,
-					"isempty": False,
-					"frontend_device": frontendIndex,
-				}
-				print(f"[NimManager] fallback NIM scan: slot {frontendIndex} '{feName}' ({feType})")
-				frontendIndex += 1
-			except Exception as err:
-				print(f"[NimManager] fallback NIM scan failed on {fePath}: {err}")
-		return entries
+          		FE_GET_INFO = 0x80A86F3D  # _IOR('o', 61, struct dvb_frontend_info)
+          		typeMap = {0: "DVB-S", 1: "DVB-C", 2: "DVB-T", 3: "ATSC"}
+          		entries = {}
+          		frontendIndex = 0
+          		for adapter in sorted(os.listdir("/dev/dvb")):
+          			if not adapter.startswith("adapter"):
+          				continue
+          			fePath = join("/dev/dvb", adapter, "frontend0")
+          			if not exists(fePath):
+          				continue
+          			try:
+          				fd = os.open(fePath, os.O_RDONLY)
+          				try:
+          					info = FrontendInfo()
+          					fcntl.ioctl(fd, FE_GET_INFO, info)
+          				finally:
+          					os.close(fd)
+          				feType = typeMap.get(info.type)
+          				if feType is None:
+          					print(f"[NimManager] {fePath}: unsupported FE type {info.type}, skipped")
+          					continue
+          				feName = info.name.decode("utf-8", "replace").strip() or fePath
+          				entries[frontendIndex] = {
+          					"type": feType,
+          					"name": feName,
+          					"isempty": False,
+          					"frontend_device": frontendIndex,
+          				}
+          				print(f"[NimManager] fallback NIM scan: slot {frontendIndex} '{feName}' ({feType})")
+          				frontendIndex += 1
+          			except Exception as err:
+          				print(f"[NimManager] fallback NIM scan failed on {fePath}: {err}")
+          		return entries
 
-	def enumerateNIMs(self):
-'''
+          	def enumerateNIMs(self):
+          '''
               s = s.replace(anchor, method, 1)
               open(p, 'w').write(s)
           print('NimManager.py /dev/dvb fallback NIM enumeration patched')
