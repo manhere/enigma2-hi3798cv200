@@ -24,7 +24,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             bc bison flex libssl-dev libelf-dev dwarves \
-            fakeroot dpkg-dev cpio kmod rsync
+            fakeroot dpkg-dev cpio kmod rsync debhelper
 
       - name: Checkout kernel source (HiSilicon-Development/linux-6.12.y)
         uses: actions/checkout@v4

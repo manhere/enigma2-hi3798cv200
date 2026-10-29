@@ -47,7 +47,7 @@ jobs:
         run: |
           git clone --depth 1 --branch 3.2.0 https://github.com/libsigcplusplus/libsigcplusplus.git /tmp/sigc
           cd /tmp/sigc
-          meson setup build --prefix=/usr -Dbuild-examples=false -Dbuild-tests=false
+          meson setup build --prefix=/usr -Dbuild-examples=false
           ninja -C build install
           ldconfig
 
