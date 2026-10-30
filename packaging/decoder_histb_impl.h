@@ -736,8 +736,8 @@ private:
 				continue;
 			if (p->possible_crtcs & (1u << crtc_index))
 			{
-				for (unsigned int j = 0; j < p->count_format_types; ++j)
-					if (p->format_types[j] == DRM_FORMAT_NV12)
+				for (unsigned int j = 0; j < p->count_formats; ++j)
+					if (p->formats[j] == DRM_FORMAT_NV12)
 					{
 						m_v0_plane_id = p->plane_id;
 						break;
