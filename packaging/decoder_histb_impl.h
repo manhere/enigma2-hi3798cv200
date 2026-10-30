@@ -539,51 +539,63 @@ public:
 		if (!m_sw)
 		{
 			uint32_t handles[4] = {0, 0, 0, 0};
-			if (mapHandles(desc, handles) < 0)
-				return false;
-
-			uint32_t pitches[4] = {0, 0, 0, 0}, offsets[4] = {0, 0, 0, 0};
-			pitches[0] = desc->layers[0].planes[0].pitch;
-			offsets[0] = desc->layers[0].planes[0].offset;
-			pitches[1] = desc->layers[0].nb_planes > 1 ? desc->layers[0].planes[1].pitch : 0;
-			offsets[1] = desc->layers[0].nb_planes > 1 ? desc->layers[0].planes[1].offset : 0;
-
-			uint32_t fb = 0;
-			int ret = drmModeAddFB2(m_fd, width, height, DRM_FORMAT_NV12,
-				handles, pitches, offsets, &fb, 0);
-			if (ret == 0 && fb)
+			int nh = mapHandles(desc, handles);
+			if (nh < 0)
 			{
-				if (!presentFb(fb))
-				{
-					drmModeRmFB(m_fd, fb);
-					unmapHandles(handles);
+				/* PRIME import rejected (e.g. community histb-vdp has no
+				 * prime import): skip the direct path, present via
+				 * mmap + sws below */
+				eDebug("[histb-dec] PRIME import rejected (%s), switching to XRGB8888 sw path",
+					strerror(errno));
+				if (!initSwPath())
 					return false;
-				}
-				if (!m_nv12_presented)
-				{
-					m_nv12_presented = true;
-					eDebug("[histb-dec] first NV12 frame presented %dx%d", width, height);
-				}
-				/* previous fb may still be scanned out until the flip
-				 * takes effect at vblank; free it one frame later */
-				if (m_prev_fb)
-				{
-					drmModeRmFB(m_fd, m_prev_fb);
-					m_prev_fb = 0;
-				}
-				unmapHandles(m_prev_handles);
-				m_prev_fb = m_fb;
-				memcpy(m_prev_handles, m_gem_handles, sizeof(m_gem_handles));
-				m_fb = fb;
-				memcpy(m_gem_handles, handles, sizeof(handles));
-				return true;
+				m_sw = true;
 			}
-			unmapHandles(handles);
-			eDebug("[histb-dec] NV12 fb rejected (%s), switching to XRGB8888 sw path",
-				strerror(errno));
-			if (!initSwPath())
-				return false;
-			m_sw = true;
+			else
+			{
+				uint32_t pitches[4] = {0, 0, 0, 0}, offsets[4] = {0, 0, 0, 0};
+				pitches[0] = desc->layers[0].planes[0].pitch;
+				offsets[0] = desc->layers[0].planes[0].offset;
+				pitches[1] = desc->layers[0].nb_planes > 1 ? desc->layers[0].planes[1].pitch : 0;
+				offsets[1] = desc->layers[0].nb_planes > 1 ? desc->layers[0].planes[1].offset : 0;
+
+				uint32_t fb = 0;
+				int ret = drmModeAddFB2(m_fd, width, height, DRM_FORMAT_NV12,
+					handles, pitches, offsets, &fb, 0);
+				if (ret == 0 && fb)
+				{
+					if (!presentFb(fb))
+					{
+						drmModeRmFB(m_fd, fb);
+						unmapHandles(handles);
+						return false;
+					}
+					if (!m_nv12_presented)
+					{
+						m_nv12_presented = true;
+						eDebug("[histb-dec] first NV12 frame presented %dx%d", width, height);
+					}
+					/* previous fb may still be scanned out until the flip
+					 * takes effect at vblank; free it one frame later */
+					if (m_prev_fb)
+					{
+						drmModeRmFB(m_fd, m_prev_fb);
+						m_prev_fb = 0;
+					}
+					unmapHandles(m_prev_handles);
+					m_prev_fb = m_fb;
+					memcpy(m_prev_handles, m_gem_handles, sizeof(m_gem_handles));
+					m_fb = fb;
+					memcpy(m_gem_handles, handles, sizeof(handles));
+					return true;
+				}
+				unmapHandles(handles);
+				eDebug("[histb-dec] NV12 fb rejected (%s), switching to XRGB8888 sw path",
+					strerror(errno));
+				if (!initSwPath())
+					return false;
+				m_sw = true;
+			}
 		}
 
 		/* software path */
