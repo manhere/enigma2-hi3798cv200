@@ -761,7 +761,9 @@ jobs:
           # OE-A 魔改版 ax_python_devel 的路径 sed hack 会污染 Debian multiarch 路径，
           # 预置 PYTHON_CPPFLAGS/PYTHON_LIBS 跳过其自动检测；用自带的 Python 3.13
           # HAVE_HISTB: histb 软件 decoder backend（dlopen hivxe-ffmpeg，不硬链接）
-          CPPFLAGS="-DHAVE_HISTB -I/tmp/hivxe-ff-include" \
+          # -I/usr/include/drm: xf86drm.h 内部 #include <drm.h>，Ubuntu libdrm-dev
+          # 把内核 DRM 头装在 /usr/include/drm/，不在默认搜索路径
+          CPPFLAGS="-DHAVE_HISTB -I/tmp/hivxe-ff-include -I/usr/include/drm" \
           LIBS="-lasound -ldrm -ldl" \
           PYTHON_CPPFLAGS="-I/usr/local/include/python3.13" \
           PYTHON_LIBS="-L/usr/local/lib -lpython3.13" \
