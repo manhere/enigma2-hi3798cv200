@@ -719,6 +719,20 @@ jobs:
           assert s.count(old) == 1
           s = s.replace(old,
               '#endif /* HAVE_HISTB */\n\n' + old, 1)
+          # The #ifdef/#else span excludes the file-scope VIDEO_STREAMTYPE_*
+          # defines (needed by eTSMPEGDecoder below); relocate the block above
+          # the sandwich so both build paths see it.
+          start_anchor = '// not finally values i think.. !!'
+          assert s.count(start_anchor) == 1, 'streamtype comment anchor'
+          i0 = s.index(start_anchor)
+          j = s.index('#define VIDEO_STREAMTYPE_AVS2', i0)
+          i1 = s.index('#endif', j) + len('#endif')
+          i1 = s.index('\n', i1) + 1
+          block = s[i0:i1]
+          s = s[:i0] + s[i1:]
+          anchor = '#ifdef HAVE_HISTB\n#include <lib/dvb/decoder_histb_impl.h>'
+          assert s.count(anchor) == 1, 'histb include anchor'
+          s = s.replace(anchor, block + '\n' + anchor, 1)
           depth = 0
           for line in s.split('\n'):
               st = line.strip()

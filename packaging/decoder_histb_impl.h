@@ -89,7 +89,7 @@ FF_SYM(void *, av_malloc, size_t size);
 FF_SYM(void, av_free, void *ptr);
 FF_SYM(int, av_strerror, int errnum, char *errbuf, size_t errbuf_size);
 FF_SYM(void, av_channel_layout_default, AVChannelLayout *ch_layout, int nb_channels);
-FF_SYM(struct SwrContext *, swr_alloc_set_opts2, struct SwrContext **ps, const AVChannelLayout *out_ch_layout, enum AVSampleFormat out_sample_fmt, int out_sample_rate, const AVChannelLayout *in_ch_layout, enum AVSampleFormat in_sample_fmt, int in_sample_rate, int log_offset, void *log_ctx);
+FF_SYM(int, swr_alloc_set_opts2, struct SwrContext **ps, const AVChannelLayout *out_ch_layout, enum AVSampleFormat out_sample_fmt, int out_sample_rate, const AVChannelLayout *in_ch_layout, enum AVSampleFormat in_sample_fmt, int in_sample_rate, int log_offset, void *log_ctx);
 FF_SYM(int, swr_init, struct SwrContext *s);
 FF_SYM(void, swr_free, struct SwrContext **s);
 FF_SYM(int, swr_convert, struct SwrContext *s, uint8_t **out, int out_count, const uint8_t **in, int in_count);
