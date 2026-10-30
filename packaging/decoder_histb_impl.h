@@ -494,6 +494,28 @@ public:
 		if (m_fd < 0)
 			return;
 		hide();
+		if (m_v0_map)
+		{
+			munmap(m_v0_map, m_v0_size);
+			m_v0_map = nullptr;
+		}
+		if (m_v0_fb)
+		{
+			drmModeRmFB(m_fd, m_v0_fb);
+			m_v0_fb = 0;
+		}
+		if (m_v0_handle)
+		{
+			destroyDumb(m_v0_handle);
+			m_v0_handle = 0;
+		}
+		if (m_v0_sws)
+		{
+			sws_freeContext(m_v0_sws);
+			m_v0_sws = nullptr;
+		}
+		m_v0_plane_id = 0;
+		m_v0_inited = false;
 		if (m_dumb_map)
 		{
 			munmap(m_dumb_map, m_dumb_size);
@@ -534,6 +556,20 @@ public:
 		{
 			eDebug("[histb-dec] unsupported DRM frame format %08x", desc->layers[0].format);
 			return false;
+		}
+
+		/* preferred: hardware video plane (V0) with ZME scaling; the video
+		 * is composed below the G0 graphics layer, so the OSD stays
+		 * visible and no CRTC takeover happens */
+		if (m_v0_plane_id || !m_v0_inited)
+		{
+			if (showFrameV0(desc, width, height))
+				return true;
+			if (!m_v0_plane_id)
+			{
+				eDebug("[histb-dec] no usable V0 plane, using legacy CRTC paths");
+				m_v0_inited = true;
+			}
 		}
 
 		if (!m_sw)
@@ -661,6 +697,9 @@ public:
 
 	void hide()
 	{
+		if (m_v0_plane_id && m_v0_fb)
+			drmModeSetPlane(m_fd, m_v0_plane_id, m_crtc_id, 0,
+				0, 0, 0, 0, 0, 0, 0, 0, 0);
 		retireFrame();
 		m_fb_bound = false;
 	}
@@ -668,6 +707,211 @@ public:
 	bool valid() const { return m_fd >= 0; }
 
 private:
+	/* ---- V0 hardware video plane path ---- */
+
+	/* find the overlay plane that takes NV12 on our CRTC */
+	void findV0Plane()
+	{
+		drmModePlaneResPtr pr = drmModeGetPlaneResources(m_fd);
+		if (!pr)
+			return;
+		int crtc_index = -1;
+		drmModeResPtr res = drmModeGetResources(m_fd);
+		if (res)
+		{
+			for (int k = 0; k < res->count_crtcs; ++k)
+				if (res->crtcs[k] == m_crtc_id)
+					crtc_index = k;
+			drmModeFreeResources(res);
+		}
+		if (crtc_index < 0)
+		{
+			drmModeFreePlaneResources(pr);
+			return;
+		}
+		for (unsigned int i = 0; i < pr->count_planes && !m_v0_plane_id; ++i)
+		{
+			drmModePlanePtr p = drmModeGetPlane(m_fd, pr->planes[i]);
+			if (!p)
+				continue;
+			if (p->possible_crtcs & (1u << crtc_index))
+			{
+				for (unsigned int j = 0; j < p->count_format_types; ++j)
+					if (p->format_types[j] == DRM_FORMAT_NV12)
+					{
+						m_v0_plane_id = p->plane_id;
+						break;
+					}
+			}
+			drmModeFreePlane(p);
+		}
+		drmModeFreePlaneResources(pr);
+		if (m_v0_plane_id)
+			eDebug("[histb-dec] V0 overlay plane %u found", m_v0_plane_id);
+		else
+			eDebug("[histb-dec] no NV12 overlay plane on crtc %u", m_crtc_id);
+	}
+
+	/* mmap the two decoder dmabuf planes */
+	int mapDecoderPlanes(const AVDRMFrameDescriptor *desc, int height,
+			     const uint8_t *src[2], int strides[2],
+			     void *maps[2], size_t mapsz[2])
+	{
+		for (int p = 0; p < 2; ++p)
+		{
+			const AVDRMPlaneDescriptor &pl = desc->layers[0].planes[p];
+			const AVDRMObjectDescriptor &obj = desc->objects[pl.object_index];
+			size_t need = (size_t)pl.pitch * ((p ? height / 2 : height) + 1);
+			if (obj.size > need)
+				need = obj.size;
+			void *m = mmap(nullptr, need, PROT_READ, MAP_SHARED, obj.fd, 0);
+			if (m == MAP_FAILED)
+			{
+				eWarning("[histb-dec] mmap decoder dmabuf failed: %s", strerror(errno));
+				for (int q = 0; q < p; ++q)
+					munmap(maps[q], mapsz[q]);
+				return -1;
+			}
+			maps[p] = m;
+			mapsz[p] = need;
+			src[p] = (const uint8_t *)m + pl.offset;
+			strides[p] = pl.pitch;
+		}
+		return 0;
+	}
+
+	/* NV12 dumb buffer sized for `width x height`, second handle for chroma */
+	bool initV0Path(int width, int height)
+	{
+		if (m_v0_fb && m_v0_w == width && m_v0_h == height)
+			return true;
+		if (m_v0_inited && !m_v0_fb)
+			return false;
+		if (!m_v0_plane_id)
+		{
+			findV0Plane();
+			if (!m_v0_plane_id)
+				return false;
+		}
+		/* re-create on video size change */
+		if (m_v0_fb)
+		{
+			drmModeSetPlane(m_fd, m_v0_plane_id, m_crtc_id, 0,
+				0, 0, 0, 0, 0, 0, 0, 0, 0);
+			drmModeRmFB(m_fd, m_v0_fb);
+			m_v0_fb = 0;
+			destroyDumb(m_v0_handle);
+			m_v0_handle = 0;
+			munmap(m_v0_map, m_v0_size);
+			m_v0_map = nullptr;
+		}
+		/* one dumb buffer holds Y (stride*height) + UV (stride*height/2):
+		 * allocate bpp=8 with 1.5x height so the size matches exactly */
+		struct drm_mode_create_dumb creq = {};
+		creq.width = width;
+		creq.height = ((height + 1) / 2) * 3;
+		creq.bpp = 8;
+		if (::ioctl(m_fd, DRM_IOCTL_MODE_CREATE_DUMB, &creq) < 0)
+		{
+			eWarning("[histb-dec] create NV12 dumb buffer failed: %s", strerror(errno));
+			return false;
+		}
+		uint32_t yoff = creq.pitch * (uint32_t)height;
+		uint32_t handles[4] = {creq.handle, creq.handle, 0, 0};
+		uint32_t pitches[4] = {creq.pitch, creq.pitch, 0, 0};
+		uint32_t offsets[4] = {0, yoff, 0, 0};
+		if (drmModeAddFB2(m_fd, width, height, DRM_FORMAT_NV12,
+			handles, pitches, offsets, &m_v0_fb, 0) < 0 || !m_v0_fb)
+		{
+			eWarning("[histb-dec] AddFB2 NV12 dumb failed: %s", strerror(errno));
+			destroyDumb(creq.handle);
+			return false;
+		}
+		struct drm_mode_map_dumb mreq = {};
+		mreq.handle = creq.handle;
+		if (::ioctl(m_fd, DRM_IOCTL_MODE_MAP_DUMB, &mreq) < 0)
+		{
+			eWarning("[histb-dec] map NV12 dumb failed: %s", strerror(errno));
+			drmModeRmFB(m_fd, m_v0_fb);
+			m_v0_fb = 0;
+			destroyDumb(creq.handle);
+			return false;
+		}
+		m_v0_map = (uint8_t *)mmap(nullptr, creq.size,
+			PROT_READ | PROT_WRITE, MAP_SHARED, m_fd, mreq.offset);
+		if (m_v0_map == MAP_FAILED)
+		{
+			m_v0_map = nullptr;
+			drmModeRmFB(m_fd, m_v0_fb);
+			m_v0_fb = 0;
+			destroyDumb(creq.handle);
+			eWarning("[histb-dec] mmap NV12 dumb failed: %s", strerror(errno));
+			return false;
+		}
+		m_v0_handle = creq.handle;
+		m_v0_pitch = creq.pitch;
+		m_v0_size = creq.size;
+		m_v0_yoff = yoff;
+		m_v0_w = width;
+		m_v0_h = height;
+		eDebug("[histb-dec] V0 path: NV12 dumb %dx%d (buf %ux%u) pitch %u on plane %u",
+			width, height, creq.width, creq.height, m_v0_pitch, m_v0_plane_id);
+		return true;
+	}
+
+	bool showFrameV0(const AVDRMFrameDescriptor *desc, int width, int height)
+	{
+		if (!initV0Path(width, height))
+			return false;
+		if (desc->layers[0].nb_planes < 2)
+			return false;
+		const uint8_t *src[2] = {nullptr, nullptr};
+		int strides[2] = {0, 0};
+		void *maps[2] = {nullptr, nullptr};
+		size_t mapsz[2] = {0, 0};
+		if (mapDecoderPlanes(desc, height, src, strides, maps, mapsz) < 0)
+			return false;
+		/* NV12 -> NV12: no colour conversion, only pitch fixup */
+		m_v0_sws = sws_getCachedContext(m_v0_sws, width, height, AV_PIX_FMT_NV12,
+			width, height, AV_PIX_FMT_NV12, SWS_BILINEAR,
+			nullptr, nullptr, nullptr);
+		if (!m_v0_sws)
+		{
+			for (int p = 0; p < 2; ++p)
+				munmap(maps[p], mapsz[p]);
+			return false;
+		}
+		uint8_t *dst[4] = {m_v0_map, m_v0_map + m_v0_yoff, nullptr, nullptr};
+		int dststrides[4] = {(int)m_v0_pitch, (int)m_v0_pitch, 0, 0};
+		int rc = sws_scale(m_v0_sws, src, strides, 0, height, dst, dststrides);
+		for (int p = 0; p < 2; ++p)
+			munmap(maps[p], mapsz[p]);
+		if (rc < 0)
+		{
+			static int v0warned = 0;
+			if (!v0warned++)
+				eWarning("[histb-dec] V0 sws_scale failed: %d", rc);
+			return false;
+		}
+		int ret = drmModeSetPlane(m_fd, m_v0_plane_id, m_crtc_id, m_v0_fb,
+			0, 0, 0, m_width, m_height,
+			0, 0, width << 16, height << 16);
+		if (ret < 0)
+		{
+			static int spwarned = 0;
+			if (!spwarned++)
+				eWarning("[histb-dec] drmModeSetPlane(V0) failed: %s", strerror(errno));
+			return false;
+		}
+		if (!m_v0_presented)
+		{
+			m_v0_presented = true;
+			eDebug("[histb-dec] first V0 frame presented %dx%d -> %dx%d",
+				width, height, m_width, m_height);
+		}
+		return true;
+	}
+
 	/* legacy flip: first frame binds crtc via modeset, then pageflip
 	 * with modeset fallback */
 	bool presentFb(uint32_t fb)
@@ -881,6 +1125,15 @@ private:
 	size_t m_dumb_size = 0;
 	uint8_t *m_dumb_map = nullptr;
 	struct SwsContext *m_sws = nullptr;
+	/* V0 hardware video plane state */
+	uint32_t m_v0_plane_id = 0;
+	uint32_t m_v0_fb = 0, m_v0_handle = 0, m_v0_pitch = 0, m_v0_yoff = 0;
+	uint32_t m_v0_w = 0, m_v0_h = 0;
+	size_t m_v0_size = 0;
+	uint8_t *m_v0_map = nullptr;
+	struct SwsContext *m_v0_sws = nullptr;
+	bool m_v0_inited = false;
+	bool m_v0_presented = false;
 };
 
 /* ------------------------------------------------------------------ */
