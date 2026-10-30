@@ -233,7 +233,7 @@ static bool histb_ff_load()
 	FF_BIND(sws_freeContext);
 #undef FF_BIND
 
-	av_log_set_level(AV_LOG_ERROR);
+	av_log_set_level(AV_LOG_FATAL);
 	eDebug("[histb-dec] hivxe-ffmpeg loaded, avcodec %u", avcodec_version());
 	ok = true;
 	return ok;
@@ -330,6 +330,11 @@ private:
 			if (::poll(&pfd, 1, 100) <= 0)
 				continue;
 			ssize_t length = ::read(m_fd_demux, buffer.data(), buffer.size());
+			if (length > 0 && !m_first_read_done)
+			{
+				m_first_read_done = true;
+				eDebug("[histb-dec] tap pid %04x first read: %zd bytes", m_pid, length);
+			}
 			if (length < 0)
 			{
 				if (errno == EOVERFLOW)
@@ -368,6 +373,12 @@ private:
 			int afc = (packet[3] >> 4) & 3;
 			if (pid != m_pid)
 				continue;
+			if (!m_first_pid_packet)
+			{
+				m_first_pid_packet = true;
+				eDebug("[histb-dec] tap pid %04x first matched TS packet: afc %d cc %d pusi %d",
+					m_pid, afc, cc, !!(packet[1] & 0x40));
+			}
 			if (!(afc & 1))
 				continue;
 			int cc = packet[3] & 0x0f;
@@ -413,6 +424,12 @@ private:
 		int64_t pts = -1;
 		if ((m_pes[7] & 0x80) && m_pes.size() >= 14)
 			pts = ((int64_t)(m_pes[9] & 0x0e) << 29) | (m_pes[10] << 22) | ((m_pes[11] & 0xfe) << 14) | (m_pes[12] << 7) | (m_pes[13] >> 1);
+		if (!m_first_delivered)
+		{
+			m_first_delivered = true;
+			eDebug("[histb-dec] tap pid %04x first PES delivered: %zu bytes, stream_id %02x, pts %lld",
+				m_pid, m_pes.size() - header, m_pes[3], (long long)pts);
+		}
 		if (m_handler)
 			m_handler(&m_pes[header], m_pes.size() - header, pts, m_random_access);
 	}
@@ -421,6 +438,9 @@ private:
 	int m_pid = -1;
 	int m_cc = -1;
 	bool m_pes_broken = true;
+	bool m_first_read_done = false;
+	bool m_first_pid_packet = false;
+	bool m_first_delivered = false;
 	bool m_random_access = false;
 	std::atomic<bool> m_stop{false};
 	std::vector<uint8_t> m_partial;
@@ -537,6 +557,11 @@ public:
 					unmapHandles(handles);
 					return false;
 				}
+				if (!m_nv12_presented)
+				{
+					m_nv12_presented = true;
+					eDebug("[histb-dec] first NV12 frame presented %dx%d", width, height);
+				}
 				/* previous fb may still be scanned out until the flip
 				 * takes effect at vblank; free it one frame later */
 				if (m_prev_fb)
@@ -610,6 +635,12 @@ public:
 			if (!swarned++)
 				eWarning("[histb-dec] sws_scale failed: %d", rc);
 			return false;
+		}
+		if (!m_sw_presented)
+		{
+			m_sw_presented = true;
+			eDebug("[histb-dec] first sw frame presented %dx%d -> %dx%d",
+				width, height, m_width, m_height);
 		}
 		return presentFb(m_dumb_fb);
 	}
@@ -824,6 +855,8 @@ private:
 	uint32_t m_conn_id = 0;
 	drmModeModeInfo m_mode = {};
 	bool m_fb_bound = false;
+	bool m_nv12_presented = false;
+	bool m_sw_presented = false;
 	bool m_sw = false;
 	int m_width = 0, m_height = 0;
 	uint32_t m_fb = 0;
@@ -899,6 +932,9 @@ public:
 		if (openAlsa() < 0)
 			return -1;
 
+		m_frames = 0;
+		m_noframe_count = 0;
+		snprintf(m_codec_name, sizeof(m_codec_name), "%s", codec->name);
 		if (m_pes.start(m_demux, pid, DMX_PES_AUDIO0 + m_dev) < 0)
 			return -1;
 		m_pid = pid;
@@ -1012,6 +1048,9 @@ private:
 	{
 		if (!m_avctx || !m_pkt || m_pid < 0 || len == 0)
 			return;
+		if (!m_frames && ++m_noframe_count % 300 == 0)
+			eWarning("[histb-dec] no audio frames after %u pes packets (codec %s) - stream may be DRA, no DRA decoder in hivxe-ffmpeg",
+				m_noframe_count, m_codec_name);
 		uint8_t *data = (uint8_t *)av_malloc(len);
 		if (!data)
 			return;
@@ -1039,6 +1078,7 @@ private:
 	void outputFrame()
 	{
 		AVFrame *f = m_frame;
+		++m_frames;
 		if (f->pts != AV_NOPTS_VALUE)
 		{
 			m_write_pts = f->pts;
@@ -1108,6 +1148,9 @@ private:
 	SwrContext *m_swr = nullptr;
 	int m_sample_rate = 48000;
 	int m_pid = -1;
+	unsigned m_frames = 0;
+	unsigned m_noframe_count = 0;
+	char m_codec_name[16] = {0};
 	std::atomic<bool> m_frozen{false};
 	int64_t m_write_pts = -1;
 	int64_t m_write_wall = 0;
@@ -1187,7 +1230,12 @@ public:
 		}
 
 		m_synced = false;
-		if (m_pes.start(m_demux, pid, DMX_PES_VIDEO0 + m_dev) < 0)
+		m_unsynced_count = 0;
+		m_first_frame = false;
+		/* DMX_PES_OTHER: the vendor demux delivers TSDEMUX_TAP data on
+		 * OTHER (recorder path, verified working on 8001 streaming) and
+		 * AUDIO0 taps, but not on VIDEO0 - video tap stayed silent. */
+		if (m_pes.start(m_demux, pid, DMX_PES_OTHER) < 0)
 			return -1;
 		m_pid = pid;
 		m_frozen = false;
@@ -1271,7 +1319,9 @@ private:
 				return (t >= 16 && t <= 21) || t == 32 || t == 33; /* IRAP/VPS/SPS */
 			}
 			case AV_CODEC_ID_CAVS:
-				return code == 0xb3; /* sequence header */
+				/* CAVS start codes (cavs.h): 0xB0 sequence header,
+				 * 0xB3 I-picture; either is a random access point */
+				return code == 0xb0 || code == 0xb3;
 			default:
 				return true;
 			}
@@ -1286,10 +1336,22 @@ private:
 		if (!m_synced)
 		{
 			if (random_access || entryPoint(es, len))
+			{
 				m_synced = true;
+				eDebug("[histb-dec] video entry point found after %u pes packets%s",
+					m_unsynced_count, random_access ? " (random access flag)" : "");
+			}
 			else
+			{
+				if (m_unsynced_count == 0)
+					eDebug("[histb-dec] first pes before sync: %zu bytes, head %02x %02x %02x %02x %02x %02x %02x %02x",
+						len, es[0], es[1], es[2], es[3],
+						len > 4 ? es[4] : 0, len > 5 ? es[5] : 0,
+						len > 6 ? es[6] : 0, len > 7 ? es[7] : 0);
+				if (++m_unsynced_count % 200 == 0)
+					eDebug("[histb-dec] no entry point yet after %u pes packets", m_unsynced_count);
 				return;
-			eDebug("[histb-dec] video entry point found");
+			}
 		}
 
 		uint8_t *data = (uint8_t *)av_malloc(len);
@@ -1319,6 +1381,13 @@ private:
 	void outputFrame()
 	{
 		AVFrame *f = m_frame;
+		if (!m_first_frame)
+		{
+			m_first_frame = true;
+			eDebug("[histb-dec] first decoded video frame: %dx%d format %d pts %lld",
+				f->width, f->height, f->format,
+				f->pts == AV_NOPTS_VALUE ? -1LL : (long long)f->pts);
+		}
 		if (f->pts != AV_NOPTS_VALUE)
 			m_last_pts = f->pts;
 
@@ -1366,6 +1435,8 @@ private:
 	enum AVCodecID m_codec_type = AV_CODEC_ID_NONE;
 	int m_pid = -1;
 	bool m_synced = false;
+	unsigned m_unsynced_count = 0;
+	bool m_first_frame = false;
 	std::atomic<bool> m_frozen{false};
 	int64_t m_last_pts = -1;
 	int m_width = 0, m_height = 0, m_framerate = 0, m_aspect = 0, m_progressive = 0;
