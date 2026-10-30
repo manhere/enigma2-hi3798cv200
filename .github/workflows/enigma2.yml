@@ -42,7 +42,8 @@ jobs:
             libjpeg-dev libgif-dev libwebp-dev libswscale-dev \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
             zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev libffi-dev \
-            liblzma-dev libncursesw5-dev uuid-dev
+            liblzma-dev libncursesw5-dev uuid-dev \
+            libasound2-dev libdrm-dev
 
       # ---- Python 3.13：enigma2 master 已全面采用 PEP 701 f-string 语法（>300 处），
       #      Debian 12 的 python3.11 无法解析，必须自带新解释器 ----
@@ -677,12 +678,91 @@ jobs:
           print('proc-stb redirect applied to %d files' % nfiles)
           EOF
 
+      # ---- histb 软件 decoder backend（2026-10-30）----
+      # histb 内核栈没有 DVB video/audio decoder 设备节点
+      # (/dev/dvb/adapterN/{video,audio}0)，直播解码走：
+      #   demux PES tap -> 用户态 TS/PES 拆包 -> hivxe-ffmpeg
+      #   (v4l2request hwaccel: AVS+/CAVS, H264, HEVC, MPEG2)
+      #   -> DRM_PRIME dmabuf -> histb-vdp DRM overlay plane
+      # 音频 -> avcodec (MP2/AAC/AC3/DTS/EAC3) -> swresample -> ALSA。
+      # hivxe-ffmpeg 头取自 HiSilicon-Development/FFmpeg fork（与
+      # extra 安装件的 avcodec 63.1.101 同源），运行时 dlopen 不硬链接。
+      - name: Patch histb decoder backend
+        run: |
+          python << 'EOF'
+          import shutil
+          shutil.copy('packaging/decoder_histb_impl.h', 'enigma2/lib/dvb/decoder_histb_impl.h')
+
+          p = 'enigma2/lib/dvb/decoder.h'
+          s = open(p).read()
+          old = 'int m_fd, m_fd_demux, m_dev, m_is_freezed, m_bypass;'
+          assert s.count(old) == 1, 'eDVBAudio pimpl anchor'
+          s = s.replace(old, old + '\n\tvoid *m_histb = nullptr;', 1)
+          old = 'int m_fd, m_fd_demux, m_dev;'
+          assert s.count(old) == 1, 'eDVBVideo pimpl anchor'
+          s = s.replace(old, old + '\n\tvoid *m_histb = nullptr;', 1)
+          old = 'int m_fd_demux, m_dev;'
+          assert s.count(old) == 2, 'eDVBPCR/eDVBTText pimpl anchor'
+          s = s.replace(old, old + '\n\tvoid *m_histb = nullptr;')
+          open(p, 'w').write(s)
+          print('decoder.h pimpl members added')
+
+          p = 'enigma2/lib/dvb/decoder.cpp'
+          s = open(p).read()
+          old = 'DEFINE_REF(eDVBAudio);'
+          assert s.count(old) == 1
+          s = s.replace(old,
+              '#ifdef HAVE_HISTB\n'
+              '#include <lib/dvb/decoder_histb_impl.h>\n'
+              '#else\n' + old, 1)
+          old = 'DEFINE_REF(eTSMPEGDecoder);'
+          assert s.count(old) == 1
+          s = s.replace(old,
+              '#endif /* HAVE_HISTB */\n\n' + old, 1)
+          depth = 0
+          for line in s.split('\n'):
+              st = line.strip()
+              if st.startswith('#ifdef') or st.startswith('#ifndef') or st.startswith('#if '):
+                  depth += 1
+              elif st.startswith('#endif'):
+                  depth -= 1
+          assert depth == 0, 'unbalanced ifdefs depth %d' % depth
+          open(p, 'w').write(s)
+          print('decoder.cpp histb backend wired')
+          EOF
+
+      - name: Prepare hivxe-ffmpeg headers
+        run: |
+          git clone --depth 1 https://github.com/HiSilicon-Development/FFmpeg.git /tmp/hivxe-ff
+          mkdir -p /tmp/hivxe-ff-include/libavcodec /tmp/hivxe-ff-include/libavutil /tmp/hivxe-ff-include/libswresample
+          cp /tmp/hivxe-ff/libavcodec/*.h /tmp/hivxe-ff-include/libavcodec/
+          cp /tmp/hivxe-ff/libavutil/*.h /tmp/hivxe-ff-include/libavutil/
+          cp /tmp/hivxe-ff/libswresample/*.h /tmp/hivxe-ff-include/libswresample/
+          # 生成头（configure 产物）：arm64 little-endian 固定模板
+          cat > /tmp/hivxe-ff-include/libavutil/avconfig.h << 'EOF'
+          #ifndef AVUTIL_AVCONFIG_H
+          #define AVUTIL_AVCONFIG_H
+          #define AV_HAVE_BIGENDIAN 0
+          #define AV_HAVE_FAST_UNALIGNED 1
+          #endif
+          EOF
+          cat > /tmp/hivxe-ff-include/libavutil/ffversion.h << 'EOF'
+          #ifndef AVUTIL_FFVERSION_H
+          #define AVUTIL_FFVERSION_H
+          #define FFMPEG_VERSION "hivxe-63.1.101"
+          #endif
+          EOF
+          echo "hivxe-ffmpeg headers ready"
+
       - name: Configure
         run: |
           cd enigma2
           ./autogen.sh
           # OE-A 魔改版 ax_python_devel 的路径 sed hack 会污染 Debian multiarch 路径，
           # 预置 PYTHON_CPPFLAGS/PYTHON_LIBS 跳过其自动检测；用自带的 Python 3.13
+          # HAVE_HISTB: histb 软件 decoder backend（dlopen hivxe-ffmpeg，不硬链接）
+          CPPFLAGS="-DHAVE_HISTB -I/tmp/hivxe-ff-include" \
+          LIBS="-lasound -ldrm -ldl" \
           PYTHON_CPPFLAGS="-I/usr/local/include/python3.13" \
           PYTHON_LIBS="-L/usr/local/lib -lpython3.13" \
           ./configure \
