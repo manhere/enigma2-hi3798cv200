@@ -1388,4 +1388,14 @@ eDVBTText::~eDVBTText()
 {
 }
 
+/*
+ * The classic DEFINE_REF lines (AddRef/Release) live in the decoder.cpp
+ * span excluded by the HAVE_HISTB #ifdef; emit them here so refcounting
+ * and the vtables resolve for the histb backend classes.
+ */
+DEFINE_REF(eDVBAudio);
+DEFINE_REF(eDVBVideo);
+DEFINE_REF(eDVBPCR);
+DEFINE_REF(eDVBTText);
+
 #endif /* __lib_dvb_decoder_histb_impl_h */
