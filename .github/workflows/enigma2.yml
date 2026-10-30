@@ -869,6 +869,14 @@ jobs:
             rm -rf /etc/enigma2
             ln -sfn /usr/local/etc/enigma2 /etc/enigma2
           fi
+          # 中国大陆 DVB-C 的 SDT/EPG 文本多为 GB2312/GBK 且不带 DVB 编码首字节，
+          # enigma2 默认按 Latin-1/ISO6937 解释 → 中文名乱码（scan.cpp:1937 服务名
+          # 转换只认 encoding.conf 的转发器映射和 "*" 全局默认，不走国家码映射）。
+          # "* GB18030" 行把 defaultEncodingTable 设为 GB18030，仅当 SI 无编码
+          # 首字节时生效，不影响自带 UTF-8/其他编码声明的流。
+          if [ ! -f /usr/local/etc/enigma2/encoding.conf ]; then
+            printf '* GB18030\n' > /usr/local/etc/enigma2/encoding.conf
+          fi
           # UsageConfig 启动时写 /etc/tuxtxt/tuxtxt2.conf（tuxtxt 字幕配置）
           mkdir -p /etc/tuxtxt
           # 开机自启：enable 幂等（离线建 symlink，无需 systemd 运行中）
