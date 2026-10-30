@@ -395,7 +395,7 @@ private:
 };
 
 /* ------------------------------------------------------------------ */
-/* DRM overlay plane output (histb-vdp)                                */
+/* DRM legacy CRTC output (histb-vdp has no KMS planes)                */
 /* ------------------------------------------------------------------ */
 
 class HistbDrmOutput
@@ -424,11 +424,11 @@ public:
 			/* make sure we can drive the plane even when fbcon holds KMS */
 			if (drmSetMaster(m_fd) == 0)
 				m_master = true;
-			eDebug("[histb-dec] DRM output on card%d plane %u crtc %u %dx%d",
-				card, m_plane_id, m_crtc_id, m_width, m_height);
+			eDebug("[histb-dec] DRM output on card%d crtc %u connector %u %dx%d (legacy)",
+				card, m_crtc_id, m_conn_id, m_width, m_height);
 			return true;
 		}
-		eWarning("[histb-dec] no usable DRM card/overlay plane found");
+		eWarning("[histb-dec] no usable DRM card/crtc found");
 		return false;
 	}
 
@@ -475,20 +475,48 @@ public:
 			return false;
 		}
 
-		ret = drmModeSetPlane(m_fd, m_plane_id, m_crtc_id, fb, 0,
-			0, 0, m_width << 16, m_height << 16,
-			0, 0, width << 16, height << 16);
-		if (ret < 0)
+		if (!m_fb_bound)
 		{
-			static int warned = 0;
-			if (!warned++)
-				eWarning("[histb-dec] drmModeSetPlane failed: %s", strerror(errno));
-			drmModeRmFB(m_fd, fb);
-			unmapHandles(handles);
-			return false;
+			/* first frame: bind the CRTC to our fb (legacy modeset) */
+			ret = drmModeSetCrtc(m_fd, m_crtc_id, fb, 0, 0, &m_conn_id, 1, &m_mode);
+			if (ret < 0)
+			{
+				eWarning("[histb-dec] drmModeSetCrtc failed: %s", strerror(errno));
+				drmModeRmFB(m_fd, fb);
+				unmapHandles(handles);
+				return false;
+			}
+			m_fb_bound = true;
+		}
+		else
+		{
+			ret = drmModePageFlip(m_fd, m_crtc_id, fb, 0, nullptr);
+			if (ret < 0)
+			{
+				/* some vendor drivers only implement full modesets */
+				ret = drmModeSetCrtc(m_fd, m_crtc_id, fb, 0, 0, &m_conn_id, 1, &m_mode);
+				if (ret < 0)
+				{
+					static int warned = 0;
+					if (!warned++)
+						eWarning("[histb-dec] drmModePageFlip/SetCrtc failed: %s", strerror(errno));
+					drmModeRmFB(m_fd, fb);
+					unmapHandles(handles);
+					return false;
+				}
+			}
 		}
 
-		retireFrame();
+		/* the fb of the previous frame may still be scanned out until the
+		 * flip takes effect at vblank; free it one frame later */
+		if (m_prev_fb)
+		{
+			drmModeRmFB(m_fd, m_prev_fb);
+			m_prev_fb = 0;
+		}
+		unmapHandles(m_prev_handles);
+		m_prev_fb = m_fb;
+		memcpy(m_prev_handles, m_gem_handles, sizeof(m_gem_handles));
 		m_fb = fb;
 		memcpy(m_gem_handles, handles, sizeof(handles));
 		return true;
@@ -496,9 +524,8 @@ public:
 
 	void hide()
 	{
-		if (m_fd >= 0 && m_plane_id && m_crtc_id)
-			drmModeSetPlane(m_fd, m_plane_id, m_crtc_id, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
 		retireFrame();
+		m_fb_bound = false;
 	}
 
 	bool valid() const { return m_fd >= 0; }
@@ -532,6 +559,11 @@ private:
 					{
 						width = crtc->mode.hdisplay;
 						height = crtc->mode.vdisplay;
+						/* legacy path: drive the CRTC directly, so remember
+						 * connector + currently active mode. histb-vdp exposes
+						 * no KMS planes at all (verified on DVBIP-1002). */
+						m_conn_id = conn->connector_id;
+						m_mode = crtc->mode;
 						drmModeFreeCrtc(crtc);
 					}
 				}
@@ -542,90 +574,19 @@ private:
 			}
 			drmModeFreeConnector(conn);
 		}
-		if (crtc_id < 0 || !width || !height)
+		if (crtc_id < 0 || !width || !height || !m_mode.clock)
 		{
-			eDebug("[histb-dec] no connected connector/crtc (TV off?) crtc %d %dx%d",
+			eDebug("[histb-dec] no connected connector/active crtc crtc %d %dx%d",
 				crtc_id, width, height);
 			drmModeFreeResources(res);
 			return false;
 		}
-		/* crtc index into possible_crtcs bitmasks */
-		int crtc_index = -1;
-		for (int i = 0; i < res->count_crtcs; ++i)
-			if ((int)res->crtcs[i] == crtc_id)
-			{
-				crtc_index = i;
-				break;
-			}
-		if (crtc_index < 0)
-		{
-			drmModeFreeResources(res);
-			return false;
-		}
-
-		drmModePlaneResPtr planes = drmModeGetPlaneResources(fd);
-		if (!planes)
-		{
-			eDebug("[histb-dec] drmModeGetPlaneResources failed: %s", strerror(errno));
-			drmModeFreeResources(res);
-			return false;
-		}
-		eDebug("[histb-dec] card has %u planes, using crtc %u (idx %d) %dx%d",
-			planes->count_planes, crtc_id, crtc_index, width, height);
-		uint32_t overlay_id = 0, fallback_id = 0;
-		for (uint32_t i = 0; i < planes->count_planes; ++i)
-		{
-			drmModePlanePtr plane = drmModeGetPlane(fd, planes->planes[i]);
-			if (!plane)
-				continue;
-			bool usable_crtc = (plane->possible_crtcs >> crtc_index) & 1;
-			bool is_overlay = false;
-			drmModeObjectPropertiesPtr props = drmModeObjectGetProperties(fd, plane->plane_id, DRM_MODE_OBJECT_PLANE);
-			if (props)
-			{
-				for (uint32_t p = 0; p < props->count_props; ++p)
-				{
-					drmModePropertyPtr prop = drmModeGetProperty(fd, props->props[p]);
-					if (prop && !strcmp(prop->name, "type"))
-					{
-						is_overlay = props->prop_values[p] == DRM_PLANE_TYPE_OVERLAY;
-						drmModeFreeProperty(prop);
-						break;
-					}
-					if (prop)
-						drmModeFreeProperty(prop);
-				}
-				drmModeFreeObjectProperties(props);
-			}
-			eDebug("[histb-dec] plane %u crtc %u fb %u possible 0x%x overlay %d usable %d",
-				plane->plane_id, plane->crtc_id, plane->fb_id,
-				plane->possible_crtcs, (int)is_overlay, (int)usable_crtc);
-			if (!usable_crtc)
-			{
-				drmModeFreePlane(plane);
-				continue;
-			}
-			if (is_overlay && !overlay_id)
-				overlay_id = plane->plane_id;
-			/* no "type" property (vendor driver): an unbound plane that
-			 * cannot be the primary (fbcon owns it) is our best guess */
-			if (!overlay_id && !fallback_id && !is_overlay &&
-				plane->fb_id == 0 && plane->crtc_id == 0)
-				fallback_id = plane->plane_id;
-			drmModeFreePlane(plane);
-		}
-		drmModeFreePlaneResources(planes);
-		drmModeFreeResources(res);
-		uint32_t plane_id = overlay_id ? overlay_id : fallback_id;
-		if (!plane_id)
-		{
-			eDebug("[histb-dec] no usable plane on this card");
-			return false;
-		}
+		eDebug("[histb-dec] legacy KMS path: crtc %u connector %u %dx%d",
+			crtc_id, m_conn_id, width, height);
 		m_crtc_id = crtc_id;
-		m_plane_id = plane_id;
 		m_width = width;
 		m_height = height;
+		drmModeFreeResources(res);
 		return true;
 	}
 
@@ -661,6 +622,12 @@ private:
 
 	void retireFrame()
 	{
+		if (m_prev_fb)
+		{
+			drmModeRmFB(m_fd, m_prev_fb);
+			m_prev_fb = 0;
+		}
+		unmapHandles(m_prev_handles);
 		if (m_fb)
 		{
 			drmModeRmFB(m_fd, m_fb);
@@ -672,10 +639,14 @@ private:
 	int m_fd = -1;
 	bool m_master = false;
 	uint32_t m_crtc_id = 0;
-	uint32_t m_plane_id = 0;
+	uint32_t m_conn_id = 0;
+	drmModeModeInfo m_mode = {};
+	bool m_fb_bound = false;
 	int m_width = 0, m_height = 0;
 	uint32_t m_fb = 0;
+	uint32_t m_prev_fb = 0;
 	uint32_t m_gem_handles[4] = {0, 0, 0, 0};
+	uint32_t m_prev_handles[4] = {0, 0, 0, 0};
 };
 
 /* ------------------------------------------------------------------ */
