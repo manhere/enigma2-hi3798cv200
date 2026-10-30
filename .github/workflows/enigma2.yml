@@ -13,6 +13,7 @@ on:
   push:
     paths:
       - ".github/workflows/enigma2.yml"
+      - "packaging/**"
   schedule:
     - cron: "0 4 * * 1" # 每周一 UTC 04:00 跟踪上游 master
 
