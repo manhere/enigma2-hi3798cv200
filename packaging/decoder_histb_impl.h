@@ -43,6 +43,7 @@
 
 #include <libavcodec/avcodec.h>
 #include <libavutil/hwcontext.h>
+#include <libavutil/hwcontext_drm.h>
 #include <libswresample/swresample.h>
 
 #include <lib/base/eerror.h>
@@ -56,8 +57,14 @@
 
 #define HISTB_FF_LIBDIR "/usr/local/lib/hivxe-ffmpeg"
 
+/*
+ * dlsym 函数指针统一带 _ptr 后缀：ffmpeg 头文件（avcodec.h 等）已把这些
+ * 符号声明为真实函数，同名指针变量会报 "redeclared as different kind of
+ * entity"。声明用 NAME_ptr，随后用 #define NAME NAME_ptr 把下方调用点
+ * 透明重定向；dlsym 的符号名字符串不受宏影响。
+ */
 #define FF_SYM(ret, name, ...) \
-	static ret (*name)(__VA_ARGS__) = nullptr
+	static ret (*name##_ptr)(__VA_ARGS__) = nullptr
 
 FF_SYM(unsigned, avcodec_version, void);
 FF_SYM(void, av_log_set_level, int level);
@@ -86,6 +93,36 @@ FF_SYM(struct SwrContext *, swr_alloc_set_opts2, struct SwrContext **ps, const A
 FF_SYM(int, swr_init, struct SwrContext *s);
 FF_SYM(void, swr_free, struct SwrContext **s);
 FF_SYM(int, swr_convert, struct SwrContext *s, uint8_t **out, int out_count, const uint8_t **in, int in_count);
+
+/* FF_BIND(name) 中 dlsym 用 #name 取原始符号名；赋值与调用点经这些
+ * 宏展开到 *_ptr 指针。必须在 FF_SYM 声明之后、首次调用之前。 */
+#define avcodec_version avcodec_version_ptr
+#define av_log_set_level av_log_set_level_ptr
+#define avcodec_find_decoder avcodec_find_decoder_ptr
+#define avcodec_alloc_context3 avcodec_alloc_context3_ptr
+#define avcodec_free_context avcodec_free_context_ptr
+#define avcodec_open2 avcodec_open2_ptr
+#define avcodec_send_packet avcodec_send_packet_ptr
+#define avcodec_receive_frame avcodec_receive_frame_ptr
+#define avcodec_flush_buffers avcodec_flush_buffers_ptr
+#define av_packet_alloc av_packet_alloc_ptr
+#define av_packet_free av_packet_free_ptr
+#define av_packet_unref av_packet_unref_ptr
+#define av_packet_from_data av_packet_from_data_ptr
+#define av_frame_alloc av_frame_alloc_ptr
+#define av_frame_free av_frame_free_ptr
+#define av_frame_unref av_frame_unref_ptr
+#define av_buffer_ref av_buffer_ref_ptr
+#define av_buffer_unref av_buffer_unref_ptr
+#define av_hwdevice_ctx_create av_hwdevice_ctx_create_ptr
+#define av_malloc av_malloc_ptr
+#define av_free av_free_ptr
+#define av_strerror av_strerror_ptr
+#define av_channel_layout_default av_channel_layout_default_ptr
+#define swr_alloc_set_opts2 swr_alloc_set_opts2_ptr
+#define swr_init swr_init_ptr
+#define swr_free swr_free_ptr
+#define swr_convert swr_convert_ptr
 
 static const char *histb_av_err(int err)
 {
@@ -190,10 +227,17 @@ public:
 		stop();
 		if (!demux || pid <= 0 || pid >= 0x1FFF)
 			return -1;
-		m_fd_demux = demux->openDemux();
+		/* openDemux()/adapter/demux are private; use the public getters
+		 * and open the node directly, like eDVBTSRecorder::start does. */
+		uint8_t ad = 0, dn = 0;
+		demux->getCAAdapterID(ad);
+		demux->getCADemuxID(dn);
+		char devname[32];
+		snprintf(devname, sizeof(devname), "/dev/dvb/adapter%d/demux%d", ad, dn);
+		m_fd_demux = ::open(devname, O_RDONLY | O_CLOEXEC);
 		if (m_fd_demux < 0)
 		{
-			eWarning("[histb-dec] unable to open demux");
+			eWarning("[histb-dec] unable to open %s", devname);
 			return -1;
 		}
 		::fcntl(m_fd_demux, F_SETFL, O_NONBLOCK);
@@ -808,7 +852,7 @@ private:
 				in_layout = &in_ch;
 			}
 			if (swr_alloc_set_opts2(&m_swr, &out_ch, AV_SAMPLE_FMT_S16, m_sample_rate,
-					in_layout, f->format, f->sample_rate, 0, nullptr) < 0 || swr_init(m_swr) < 0)
+					in_layout, (enum AVSampleFormat)f->format, f->sample_rate, 0, nullptr) < 0 || swr_init(m_swr) < 0)
 			{
 				eWarning("[histb-dec] swr setup failed");
 				swr_free(&m_swr);
