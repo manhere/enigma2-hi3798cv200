@@ -29,7 +29,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <deque>
 #include <functional>
+#include <mutex>
 #include <thread>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
@@ -1166,9 +1168,63 @@ public:
 	HistbVideoPriv(eDVBDemux *demux, int dev)
 		: m_demux(demux), m_dev(dev)
 	{
+		/* cross-thread event marshaling: the decode thread queues events
+		 * and pokes the pipe; eDVBVideo (main thread) drains via its
+		 * eSocketNotifier and emits from main-loop context.  Emitting the
+		 * sigc chain (which reaches Python) directly from the decode
+		 * thread segfaults in PyTuple_New. */
+		if (pipe2(m_evpipe, O_NONBLOCK | O_CLOEXEC) < 0)
+		{
+			m_evpipe[0] = m_evpipe[1] = -1;
+		}
 		m_pes.setHandler([this](const uint8_t *es, size_t len, int64_t pts, bool ra) { feedPes(es, len, pts, ra); });
 	}
-	~HistbVideoPriv() { stop(); }
+	~HistbVideoPriv()
+	{
+		stop();
+		for (int i = 0; i < 2; i++)
+		{
+			if (m_evpipe[i] >= 0)
+				::close(m_evpipe[i]);
+			m_evpipe[i] = -1;
+		}
+	}
+
+	int eventFd() const { return m_evpipe[0]; }
+
+	void emitEvent(const struct iTSMPEGDecoder::videoEvent &ev)
+	{
+		{
+			std::lock_guard<std::mutex> l(m_evmutex);
+			if (m_evq.size() >= 32)
+				m_evq.pop_front();
+			m_evq.push_back(ev);
+		}
+		if (m_evpipe[1] >= 0)
+		{
+			char c = 1;
+			ssize_t r = ::write(m_evpipe[1], &c, 1);
+			(void)r;
+		}
+	}
+
+	/* main thread only */
+	void drainEvents()
+	{
+		char buf[64];
+		while (::read(m_evpipe[0], buf, sizeof(buf)) > 0)
+			;
+		std::deque<struct iTSMPEGDecoder::videoEvent> q;
+		{
+			std::lock_guard<std::mutex> l(m_evmutex);
+			q.swap(m_evq);
+		}
+		for (const auto &ev : q)
+		{
+			if (m_event_sink)
+				m_event_sink(ev);
+		}
+	}
 
 	int startPid(int pid, int type)
 	{
@@ -1408,8 +1464,7 @@ private:
 			ev.aspect = m_aspect;
 			ev.progressive = m_progressive;
 			ev.framerate = m_framerate;
-			if (m_event_sink)
-				m_event_sink(ev);
+			emitEvent(ev);
 		}
 
 		if (m_frozen)
@@ -1441,6 +1496,9 @@ private:
 	int64_t m_last_pts = -1;
 	int m_width = 0, m_height = 0, m_framerate = 0, m_aspect = 0, m_progressive = 0;
 	std::function<void(const struct iTSMPEGDecoder::videoEvent &)> m_event_sink;
+	int m_evpipe[2] = {-1, -1};
+	std::mutex m_evmutex;
+	std::deque<struct iTSMPEGDecoder::videoEvent> m_evq;
 };
 
 /* ------------------------------------------------------------------ */
@@ -1526,7 +1584,24 @@ eDVBVideo::eDVBVideo(eDVBDemux *demux, int dev, bool fcc_enable)
 	m_driver_gamma = 0;
 	m_hdr_gamma_authoritative = false;
 	m_gamma_from_driver_event = false;
-	m_histb = new HistbVideoPriv(demux, dev);
+	HistbVideoPriv *v = new HistbVideoPriv(demux, dev);
+	m_histb = v;
+	/* deliver decode-thread events from main-loop context (see
+	 * HistbVideoPriv::emitEvent) */
+	int evfd = v->eventFd();
+	if (evfd >= 0)
+	{
+		m_sn = eSocketNotifier::create(eApp, evfd, eSocketNotifier::Read, false);
+		CONNECT(m_sn->activated, eDVBVideo::video_event);
+	}
+}
+
+/* main thread: drain queued events from the decode thread and emit */
+void eDVBVideo::video_event(int what)
+{
+	(void)what;
+	if (m_histb)
+		((HistbVideoPriv *)m_histb)->drainEvents();
 }
 
 void eDVBVideo::stop()
