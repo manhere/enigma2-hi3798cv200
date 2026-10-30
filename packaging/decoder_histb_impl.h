@@ -32,6 +32,7 @@
 #include <functional>
 #include <thread>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 
 #include <linux/dvb/dmx.h>
 
