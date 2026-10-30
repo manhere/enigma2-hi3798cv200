@@ -564,6 +564,33 @@ jobs:
               raise SystemExit('dvb.cpp real frontend anchor not found - upstream changed, review needed')
           open(p, 'w').write(s)
           print('dvb.cpp mainline adapter registration patched')
+
+          # ---- lib/dvb/db.cpp：悬空 bouquet 条目修复 ----
+          # loadBouquet() 在检查引用文件是否存在之前就执行
+          # m_bouquets[bouquet_name]（operator[] 默认构造空 eBouquet，
+          # m_bouquet_name=""）。被引用的 userbouquet 文件缺失时函数
+          # return，但空条目已留在 map：① 名字解析
+          # （eStaticServiceDVBBouquetInformation::getName）见空名返回 -1，
+          # 频道列表直接显示 FROM BOUQUET "xxx" 原文（2026-10-30 盒子实测，
+          # bouquets.tv 有 favourites 条目而 userbouquet.favourites.tv
+          # 缺失）；② reloadBouquets() 的 favourites 自动补建分支因
+          # find() 命中空条目而永不执行，文件永远补不上。修复：未找到
+          # 文件时 erase 掉 operator[] 产生的空条目，让补建逻辑生效。
+          p = 'lib/dvb/db.cpp'
+          s = open(p).read()
+          old = ('eDebug("[eDVBDB] Error: Can\'t load bouquet \'%s\'!", path);\n'
+                 '\t\t\t\treturn;\n')
+          new = ('eDebug("[eDVBDB] Error: Can\'t load bouquet \'%s\'!", path);\n'
+                 '\t\t\t\tm_bouquets.erase(bouquet_name);\n'
+                 '\t\t\t\treturn;\n')
+          if old in s:
+              s = s.replace(old, new, 1)
+          elif 'm_bouquets.erase(bouquet_name)' in s:
+              pass
+          else:
+              raise SystemExit('db.cpp missing-bouquet anchor not found - upstream changed, review needed')
+          open(p, 'w').write(s)
+          print('db.cpp dangling bouquet entry fixed')
           EOF
 
       - name: Configure
@@ -876,6 +903,16 @@ jobs:
           # 首字节时生效，不影响自带 UTF-8/其他编码声明的流。
           if [ ! -f /usr/local/etc/enigma2/encoding.conf ]; then
             printf '* GB18030\n' > /usr/local/etc/enigma2/encoding.conf
+          fi
+          # 预置默认 favourites bouquet：OE 镜像由 defaults 包提供，本包此前
+          # 不带 → bouquets.tv 里的 FROM BOUQUET "userbouquet.favourites.tv"
+          # 条目指向缺失文件，名字解析失败后频道列表直接显示引用原文
+          # （2026-10-30 盒子实测）。幂等：不覆盖用户已有文件。
+          if [ ! -f /usr/local/etc/enigma2/userbouquet.favourites.tv ]; then
+            printf '#NAME Favourites (TV)\n' > /usr/local/etc/enigma2/userbouquet.favourites.tv
+          fi
+          if [ ! -f /usr/local/etc/enigma2/userbouquet.favourites.radio ]; then
+            printf '#NAME Favourites (Radio)\n' > /usr/local/etc/enigma2/userbouquet.favourites.radio
           fi
           # UsageConfig 启动时写 /etc/tuxtxt/tuxtxt2.conf（tuxtxt 字幕配置）
           mkdir -p /etc/tuxtxt
