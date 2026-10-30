@@ -1,0 +1,34 @@
+H.264 / HEVC CABAC firmware for Hi3798CV200 histb-vdec
+======================================================
+
+Both files are reconstructed from the HiSTBLinux vfmw_v5.0 product source
+(JasonFreeLab/HiSTBLinuxV100R005C00SPC060, product Hi3798CV200,
+LNX_CFG/64bit), which is also the source the official histb-avsp.bin was
+reconstructed from (see README.avsp).
+
+histb-h264-cabac.bin (5120 bytes, sha256
+0f5b1a41f7d2ab21f1bd5ffc7be9a3e4777cac1c81cc15f53cc6cd12998a626e)
+  Direct extraction of `g_CabacMN` from
+  source/msp/drv/vfmw/vfmw_v5.0/product/Hi3798CV200/LNX_CFG/64bit/core/syntax/h264.S
+  (`.size g_CabacMN, 5120`, little-endian .word dump). The vfmw H.264 HAL
+  (H264HAL_V4R3C1_InitHal) memcpy's this object verbatim into the VDH
+  DMA buffer, which matches the histb-vdec driver behaviour
+  (histb_vdec_load_cabac memcpy's the firmware file as-is).
+
+histb-hevc-cabac.bin (928 bytes, sha256
+eb04288c3fa644565f9d71931918cf27f02022ffb77b4343383b80d2dcfff972)
+  Offline replay of the runtime generator `HEVCWriteCabacTab` in
+  source/msp/drv/vfmw/vfmw_v5.0/product/Hi3798CV200/LNX_CFG/64bit/core/driver/HiVDHV4R3C1/vdm_hal_hevc.S.
+  The generator reads the three-plane initValue table `s_InitValue`
+  (1920 bytes = 3 planes x 160 words; plane 0 starts at index 16, planes
+  1/2 at index 0) and computes, per HEVC spec, for each non-(-1) entry:
+      m = (initValue >> 4) * 5 - 45   (low byte, ASR is arithmetic)
+      n = (initValue & 15) * 8 - 16   (high byte)
+  (-1 entries are written as 0,0.)  This yields 144 + 160 + 160 = 464
+  two-byte entries = 928 bytes in `s_CabacMN` (.bss).  The same function
+  then copies it to the hardware buffer with a per-16-bit byte swap
+  (dst[2k] = s[2k+1], dst[2k+1] = s[2k]); the .bin file contains the
+  final (swapped) hardware image, matching the driver's verbatim memcpy.
+  The m/n formulas are exactly the HEVC spec preCtxState coefficients
+  (slopeIdx*5 - 45, (offsetIdx << 3) - 16), so the reconstruction is
+  constrained by the standard, not just by the disassembly.

@@ -625,6 +625,26 @@ jobs:
               raise SystemExit('demux.cpp setSourceFrontend anchor not found - upstream changed, review needed')
           open(p, 'w').write(s)
           print('demux.cpp setSourceFrontend fallback patched')
+
+          # ---- /proc/stb → /var/stb（2026-10-30 盒子实测）----
+          # histb 内核栈不提供传统 STB 的 /proc/stb procfs 树，eAVControl
+          # 每次取分辨率/宽高比都刷 "Unable to open file
+          # '/proc/stb/vmpeg/0/xres'"（单次换台 60+ 行），写画面位置
+          # dst_* 同样失败。/proc 是 procfs，用户态无法在其下创建目录，
+          # fake 树挂载方案不可行，因此把全仓 C++/Python 的路径前缀
+          # 统一重定向到 /var/stb；deb 自带预填默认值的同名文件树
+          # （见打包段），日志静音，后续 decoder backend 可直接写真实
+          # 状态。纯路径字符串替换，不触碰任何逻辑。
+          import subprocess
+          r = subprocess.run(['grep', '-rl', '/proc/stb', 'lib', 'main'],
+                             capture_output=True, text=True)
+          nfiles = 0
+          for f in r.stdout.split():
+              s = open(f).read()
+              if '/proc/stb' in s:
+                  open(f, 'w').write(s.replace('/proc/stb', '/var/stb'))
+                  nfiles += 1
+          print('proc-stb redirect applied to %d files' % nfiles)
           EOF
 
       - name: Configure
@@ -885,6 +905,54 @@ jobs:
           # [Skin] Error: Tag 'font' needs an existing filename）----
           mkdir -p ${PKGDIR}/usr/share/fonts
           cp -f /tmp/tuxtxt/tuxtxt/font/tuxtxt.ttf ${PKGDIR}/usr/share/fonts/tuxtxt.ttf
+
+          # ---- VDEC 解码固件（histb-vdec 内核驱动 request_firmware）----
+          #   histb-avsp.bin        AVS/AVS+ SCD 机器程序（17920B，
+          #                         HiVXE-2.0 官方重构件，源 HiSTB
+          #                         vfmw_v5.0 product Hi3798CV200 scd_drv.S
+          #                         g_avsp_firmware，sha256 4ec0ea0b...）
+          #   histb-h264-cabac.bin  H.264 CABAC 表（5120B，vfmw
+          #                         vdm_hal_h264.S H264HAL_V4R3C1_InitHal
+          #                         原样 memcpy 的 g_CabacMN 提取）
+          #   histb-hevc-cabac.bin  HEVC CABAC 表（928B=464 entries，
+          #                         vfmw vdm_hal_hevc.S HEVCWriteCabacTab
+          #                         运行时由 s_InitValue 按 HEVC 规范
+          #                         m=slope*5-45 / n=(offset<<3)-16 变换
+          #                         后 16bit 字节交换写入，本 bin 为
+          #                         同一变换的离线重构）
+          # 固件缺失时对应格式解码请求直接失败（AVS/AVS+ 台全黑）。
+          mkdir -p ${PKGDIR}/lib/firmware/hisilicon
+          cp ${GITHUB_WORKSPACE}/packaging/firmware/hisilicon/*.bin ${PKGDIR}/lib/firmware/hisilicon/
+
+          # ---- fake /var/stb 文件树（配合源码 /proc/stb → /var/stb 重定向）----
+          # 数值节点全部 hex 文本（CFile::parseIntHex 解析）：
+          #   xres=1920(780) yres=1080(438) framerate=50(32) aspect=1(16:9)
+          # dst_* 为画面定位写入目标，初值任意（E2 会重写）。
+          mkdir -p ${PKGDIR}/var/stb/vmpeg/0 ${PKGDIR}/var/stb/video ${PKGDIR}/var/stb/avs/0
+          printf 780 > ${PKGDIR}/var/stb/vmpeg/0/xres
+          printf 438 > ${PKGDIR}/var/stb/vmpeg/0/yres
+          printf 1 > ${PKGDIR}/var/stb/vmpeg/0/aspect
+          printf 32 > ${PKGDIR}/var/stb/vmpeg/0/framerate
+          printf 32 > ${PKGDIR}/var/stb/vmpeg/0/fallback_framerate
+          printf 1 > ${PKGDIR}/var/stb/vmpeg/0/progressive
+          printf 0 > ${PKGDIR}/var/stb/vmpeg/0/dst_top
+          printf 0 > ${PKGDIR}/var/stb/vmpeg/0/dst_left
+          printf 500 > ${PKGDIR}/var/stb/vmpeg/0/dst_width
+          printf 2d0 > ${PKGDIR}/var/stb/vmpeg/0/dst_height
+          printf 0 > ${PKGDIR}/var/stb/vmpeg/0/dst_apply
+          printf ff > ${PKGDIR}/var/stb/video/alpha
+          printf 1 > ${PKGDIR}/var/stb/video/aspect
+          printf bestfit > ${PKGDIR}/var/stb/video/policy
+          printf bestfit > ${PKGDIR}/var/stb/video/policy2
+          printf bestfit > ${PKGDIR}/var/stb/video/policy_choices
+          printf 720p50 > ${PKGDIR}/var/stb/video/videomode
+          printf 720p50 > ${PKGDIR}/var/stb/video/videomode_50hz
+          printf 720p24 > ${PKGDIR}/var/stb/video/videomode_24hz
+          printf 720p60 > ${PKGDIR}/var/stb/video/videomode_60hz
+          printf '720p50 720p25 1080i50 1080p50 2160p50\n' > ${PKGDIR}/var/stb/video/videomode_choices
+          printf encoder > ${PKGDIR}/var/stb/avs/0/input
+          printf encoder > ${PKGDIR}/var/stb/avs/0/input_choices
+          printf Hdmi > ${PKGDIR}/var/stb/avs/0/colorformat
 
           # ---- systemd 开机自启单元 ----
           # enigma2 必须经 supervisor wrapper（/usr/local/bin/enigma2）启动，
