@@ -45,6 +45,7 @@
 #include <libavutil/hwcontext.h>
 #include <libavutil/hwcontext_drm.h>
 #include <libswresample/swresample.h>
+#include <libswscale/swscale.h>
 
 #include <lib/base/eerror.h>
 #include <lib/base/thread.h>
@@ -93,6 +94,9 @@ FF_SYM(int, swr_alloc_set_opts2, struct SwrContext **ps, const AVChannelLayout *
 FF_SYM(int, swr_init, struct SwrContext *s);
 FF_SYM(void, swr_free, struct SwrContext **s);
 FF_SYM(int, swr_convert, struct SwrContext *s, uint8_t **out, int out_count, const uint8_t **in, int in_count);
+FF_SYM(struct SwsContext *, sws_getCachedContext, struct SwsContext *ctx, int srcW, int srcH, enum AVPixelFormat srcFormat, int dstW, int dstH, enum AVPixelFormat dstFormat, int flags, struct SwsFilter *srcFilter, struct SwsFilter *dstFilter, const double *param);
+FF_SYM(int, sws_scale, struct SwsContext *c, const uint8_t *const srcSlice[], const int srcStride[], int srcSliceY, int srcSliceH, uint8_t *const dst[], const int dstStride[]);
+FF_SYM(void, sws_freeContext, struct SwsContext *ctx);
 
 /* FF_BIND(name) 中 dlsym 用 #name 取原始符号名；赋值与调用点经这些
  * 宏展开到 *_ptr 指针。必须在 FF_SYM 声明之后、首次调用之前。 */
@@ -123,6 +127,9 @@ FF_SYM(int, swr_convert, struct SwrContext *s, uint8_t **out, int out_count, con
 #define swr_init swr_init_ptr
 #define swr_free swr_free_ptr
 #define swr_convert swr_convert_ptr
+#define sws_getCachedContext sws_getCachedContext_ptr
+#define sws_scale sws_scale_ptr
+#define sws_freeContext sws_freeContext_ptr
 
 static const char *histb_av_err(int err)
 {
@@ -139,7 +146,7 @@ static bool histb_ff_load()
 		return ok;
 	loaded = true;
 
-	void *h[3] = {nullptr, nullptr, nullptr};
+	void *h[4] = {nullptr, nullptr, nullptr, nullptr};
 	const char *names[3] = {"libavutil.so.61", "libavcodec.so.63", "libswresample.so.7"};
 	bool failed = false;
 	for (int i = 0; i < 3; ++i)
@@ -157,13 +164,37 @@ static bool histb_ff_load()
 			failed = true;
 		}
 	}
+	/* swscale: soname differs between builds, try known majors then unversioned */
+	static const char *sws_names[] = {
+		"libswscale.so.11", "libswscale.so.10", "libswscale.so.9",
+		"libswscale.so.8", "libswscale.so"};
+	for (const char *n : sws_names)
+	{
+		h[3] = dlopen(n, RTLD_NOW | RTLD_LOCAL);
+		if (!h[3])
+		{
+			char path[160];
+			snprintf(path, sizeof(path), HISTB_FF_LIBDIR "/%s", n);
+			h[3] = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+		}
+		if (h[3])
+		{
+			eDebug("[histb-dec] swscale loaded as %s", n);
+			break;
+		}
+	}
+	if (!h[3])
+	{
+		eWarning("[histb-dec] dlopen libswscale failed: %s", dlerror());
+		failed = true;
+	}
 	if (failed)
 		return false;
 
 #define FF_BIND(name) \
 	do { \
 		void *sym = nullptr; \
-		for (int i = 0; i < 3 && !sym; ++i) \
+		for (int i = 0; i < 4 && !sym; ++i) \
 			if (h[i]) sym = dlsym(h[i], #name); \
 		if (!sym) { eWarning("[histb-dec] missing symbol %s", #name); return false; } \
 		name = (decltype(name))sym; \
@@ -196,6 +227,9 @@ static bool histb_ff_load()
 	FF_BIND(swr_init);
 	FF_BIND(swr_free);
 	FF_BIND(swr_convert);
+	FF_BIND(sws_getCachedContext);
+	FF_BIND(sws_scale);
+	FF_BIND(sws_freeContext);
 #undef FF_BIND
 
 	av_log_set_level(AV_LOG_ERROR);
@@ -437,6 +471,26 @@ public:
 		if (m_fd < 0)
 			return;
 		hide();
+		if (m_dumb_map)
+		{
+			munmap(m_dumb_map, m_dumb_size);
+			m_dumb_map = nullptr;
+		}
+		if (m_dumb_fb)
+		{
+			drmModeRmFB(m_fd, m_dumb_fb);
+			m_dumb_fb = 0;
+		}
+		if (m_dumb_handle)
+		{
+			destroyDumb(m_dumb_handle);
+			m_dumb_handle = 0;
+		}
+		if (m_sws)
+		{
+			sws_freeContext(m_sws);
+			m_sws = nullptr;
+		}
 		if (m_master)
 			drmDropMaster(m_fd);
 		::close(m_fd);
@@ -444,7 +498,11 @@ public:
 		m_master = false;
 	}
 
-	/* show one NV12 dmabuf described by an AVDRMFrameDescriptor */
+	/* show one NV12 dmabuf described by an AVDRMFrameDescriptor.
+	 * Direct path: import dmabuf -> AddFB2(NV12) -> flip (needs a driver
+	 * with an NV12 plane). Fallback: mmap dmabuf -> sws NV12->XRGB8888
+	 * into a dumb buffer -> flip (works with the simple-pipe community
+	 * histb-vdp, whose primary plane only takes RGB formats). */
 	bool showFrame(const AVDRMFrameDescriptor *desc, int width, int height)
 	{
 		if (m_fd < 0 || !desc || desc->nb_layers < 1 || desc->nb_objects < 1)
@@ -455,71 +513,104 @@ public:
 			return false;
 		}
 
-		uint32_t handles[4] = {0, 0, 0, 0};
-		if (mapHandles(desc, handles) < 0)
-			return false;
-
-		uint32_t pitches[2], offsets[2];
-		pitches[0] = desc->layers[0].planes[0].pitch;
-		offsets[0] = desc->layers[0].planes[0].offset;
-		pitches[1] = desc->layers[0].nb_planes > 1 ? desc->layers[0].planes[1].pitch : 0;
-		offsets[1] = desc->layers[0].nb_planes > 1 ? desc->layers[0].planes[1].offset : 0;
-
-		uint32_t fb = 0;
-		int ret = drmModeAddFB2(m_fd, width, height, DRM_FORMAT_NV12,
-			handles, pitches, offsets, &fb, 0);
-		if (ret < 0 || !fb)
+		if (!m_sw)
 		{
-			eWarning("[histb-dec] drmModeAddFB2 failed: %s", strerror(errno));
-			unmapHandles(handles);
-			return false;
-		}
-
-		if (!m_fb_bound)
-		{
-			/* first frame: bind the CRTC to our fb (legacy modeset) */
-			ret = drmModeSetCrtc(m_fd, m_crtc_id, fb, 0, 0, &m_conn_id, 1, &m_mode);
-			if (ret < 0)
-			{
-				eWarning("[histb-dec] drmModeSetCrtc failed: %s", strerror(errno));
-				drmModeRmFB(m_fd, fb);
-				unmapHandles(handles);
+			uint32_t handles[4] = {0, 0, 0, 0};
+			if (mapHandles(desc, handles) < 0)
 				return false;
-			}
-			m_fb_bound = true;
-		}
-		else
-		{
-			ret = drmModePageFlip(m_fd, m_crtc_id, fb, 0, nullptr);
-			if (ret < 0)
+
+			uint32_t pitches[4] = {0, 0, 0, 0}, offsets[4] = {0, 0, 0, 0};
+			pitches[0] = desc->layers[0].planes[0].pitch;
+			offsets[0] = desc->layers[0].planes[0].offset;
+			pitches[1] = desc->layers[0].nb_planes > 1 ? desc->layers[0].planes[1].pitch : 0;
+			offsets[1] = desc->layers[0].nb_planes > 1 ? desc->layers[0].planes[1].offset : 0;
+
+			uint32_t fb = 0;
+			int ret = drmModeAddFB2(m_fd, width, height, DRM_FORMAT_NV12,
+				handles, pitches, offsets, &fb, 0);
+			if (ret == 0 && fb)
 			{
-				/* some vendor drivers only implement full modesets */
-				ret = drmModeSetCrtc(m_fd, m_crtc_id, fb, 0, 0, &m_conn_id, 1, &m_mode);
-				if (ret < 0)
+				if (!presentFb(fb))
 				{
-					static int warned = 0;
-					if (!warned++)
-						eWarning("[histb-dec] drmModePageFlip/SetCrtc failed: %s", strerror(errno));
 					drmModeRmFB(m_fd, fb);
 					unmapHandles(handles);
 					return false;
 				}
+				/* previous fb may still be scanned out until the flip
+				 * takes effect at vblank; free it one frame later */
+				if (m_prev_fb)
+				{
+					drmModeRmFB(m_fd, m_prev_fb);
+					m_prev_fb = 0;
+				}
+				unmapHandles(m_prev_handles);
+				m_prev_fb = m_fb;
+				memcpy(m_prev_handles, m_gem_handles, sizeof(m_gem_handles));
+				m_fb = fb;
+				memcpy(m_gem_handles, handles, sizeof(handles));
+				return true;
 			}
+			unmapHandles(handles);
+			eDebug("[histb-dec] NV12 fb rejected (%s), switching to XRGB8888 sw path",
+				strerror(errno));
+			if (!initSwPath())
+				return false;
+			m_sw = true;
 		}
 
-		/* the fb of the previous frame may still be scanned out until the
-		 * flip takes effect at vblank; free it one frame later */
-		if (m_prev_fb)
+		/* software path */
+		if (desc->layers[0].nb_planes < 2)
 		{
-			drmModeRmFB(m_fd, m_prev_fb);
-			m_prev_fb = 0;
+			eDebug("[histb-dec] NV12 desc with %u planes", desc->layers[0].nb_planes);
+			return false;
 		}
-		unmapHandles(m_prev_handles);
-		m_prev_fb = m_fb;
-		memcpy(m_prev_handles, m_gem_handles, sizeof(m_gem_handles));
-		m_fb = fb;
-		memcpy(m_gem_handles, handles, sizeof(handles));
-		return true;
+		const uint8_t *src[2] = {nullptr, nullptr};
+		int strides[2] = {0, 0};
+		void *maps[2] = {nullptr, nullptr};
+		size_t mapsz[2] = {0, 0};
+		for (int p = 0; p < 2; ++p)
+		{
+			const AVDRMPlaneDescriptor &pl = desc->layers[0].planes[p];
+			const AVDRMObjectDescriptor &obj = desc->objects[pl.object_index];
+			size_t need = (size_t)pl.pitch * ((p ? height / 2 : height) + 1);
+			if (obj.size > need)
+				need = obj.size;
+			void *m = mmap(nullptr, need, PROT_READ, MAP_SHARED, obj.fd, 0);
+			if (m == MAP_FAILED)
+			{
+				eWarning("[histb-dec] mmap decoder dmabuf failed: %s", strerror(errno));
+				for (int q = 0; q < p; ++q)
+					munmap(maps[q], mapsz[q]);
+				return false;
+			}
+			maps[p] = m;
+			mapsz[p] = need;
+			src[p] = (const uint8_t *)m + pl.offset;
+			strides[p] = pl.pitch;
+		}
+		m_sws = sws_getCachedContext(m_sws, width, height, AV_PIX_FMT_NV12,
+			m_width, m_height, AV_PIX_FMT_BGR0, SWS_BILINEAR,
+			nullptr, nullptr, nullptr);
+		if (!m_sws)
+		{
+			eWarning("[histb-dec] sws_getCachedContext failed");
+			for (int p = 0; p < 2; ++p)
+				munmap(maps[p], mapsz[p]);
+			return false;
+		}
+		uint8_t *dst[4] = {m_dumb_map, nullptr, nullptr, nullptr};
+		int dststrides[4] = {(int)m_dumb_pitch, 0, 0, 0};
+		int rc = sws_scale(m_sws, src, strides, 0, height, dst, dststrides);
+		for (int p = 0; p < 2; ++p)
+			munmap(maps[p], mapsz[p]);
+		if (rc < 0)
+		{
+			static int swarned = 0;
+			if (!swarned++)
+				eWarning("[histb-dec] sws_scale failed: %d", rc);
+			return false;
+		}
+		return presentFb(m_dumb_fb);
 	}
 
 	void hide()
@@ -531,6 +622,96 @@ public:
 	bool valid() const { return m_fd >= 0; }
 
 private:
+	/* legacy flip: first frame binds crtc via modeset, then pageflip
+	 * with modeset fallback */
+	bool presentFb(uint32_t fb)
+	{
+		int ret;
+		if (!m_fb_bound)
+		{
+			ret = drmModeSetCrtc(m_fd, m_crtc_id, fb, 0, 0, &m_conn_id, 1, &m_mode);
+			if (ret < 0)
+			{
+				eWarning("[histb-dec] drmModeSetCrtc failed: %s", strerror(errno));
+				return false;
+			}
+			m_fb_bound = true;
+			return true;
+		}
+		ret = drmModePageFlip(m_fd, m_crtc_id, fb, 0, nullptr);
+		if (ret < 0)
+		{
+			/* some vendor drivers only implement full modesets */
+			ret = drmModeSetCrtc(m_fd, m_crtc_id, fb, 0, 0, &m_conn_id, 1, &m_mode);
+		}
+		if (ret < 0)
+		{
+			static int warned = 0;
+			if (!warned++)
+				eWarning("[histb-dec] drmModePageFlip/SetCrtc failed: %s", strerror(errno));
+			return false;
+		}
+		return true;
+	}
+
+	/* XRGB8888 dumb buffer for the sw conversion path */
+	bool initSwPath()
+	{
+		struct drm_mode_create_dumb creq = {};
+		creq.width = m_width;
+		creq.height = m_height;
+		creq.bpp = 32;
+		if (::ioctl(m_fd, DRM_IOCTL_MODE_CREATE_DUMB, &creq) < 0)
+		{
+			eWarning("[histb-dec] create dumb buffer failed: %s", strerror(errno));
+			return false;
+		}
+		uint32_t handles[4] = {creq.handle, 0, 0, 0};
+		uint32_t pitches[4] = {creq.pitch, 0, 0, 0};
+		uint32_t offsets[4] = {0, 0, 0, 0};
+		if (drmModeAddFB2(m_fd, m_width, m_height, DRM_FORMAT_XRGB8888,
+			handles, pitches, offsets, &m_dumb_fb, 0) < 0 || !m_dumb_fb)
+		{
+			eWarning("[histb-dec] AddFB2 dumb buffer failed: %s", strerror(errno));
+			destroyDumb(creq.handle);
+			return false;
+		}
+		struct drm_mode_map_dumb mreq = {};
+		mreq.handle = creq.handle;
+		if (::ioctl(m_fd, DRM_IOCTL_MODE_MAP_DUMB, &mreq) < 0)
+		{
+			eWarning("[histb-dec] map dumb buffer failed: %s", strerror(errno));
+			drmModeRmFB(m_fd, m_dumb_fb);
+			m_dumb_fb = 0;
+			destroyDumb(creq.handle);
+			return false;
+		}
+		m_dumb_map = (uint8_t *)mmap(nullptr, creq.size,
+			PROT_READ | PROT_WRITE, MAP_SHARED, m_fd, mreq.offset);
+		if (m_dumb_map == MAP_FAILED)
+		{
+			eWarning("[histb-dec] mmap dumb buffer failed: %s", strerror(errno));
+			m_dumb_map = nullptr;
+			drmModeRmFB(m_fd, m_dumb_fb);
+			m_dumb_fb = 0;
+			destroyDumb(creq.handle);
+			return false;
+		}
+		m_dumb_handle = creq.handle;
+		m_dumb_pitch = creq.pitch;
+		m_dumb_size = creq.size;
+		eDebug("[histb-dec] sw path: dumb %dx%d pitch %u",
+			m_width, m_height, m_dumb_pitch);
+		return true;
+	}
+
+	void destroyDumb(uint32_t handle)
+	{
+		struct drm_mode_destroy_dumb d = {};
+		d.handle = handle;
+		::ioctl(m_fd, DRM_IOCTL_MODE_DESTROY_DUMB, &d);
+	}
+
 	bool probeCard(int fd)
 	{
 		drmModeResPtr res = drmModeGetResources(fd);
@@ -642,11 +823,16 @@ private:
 	uint32_t m_conn_id = 0;
 	drmModeModeInfo m_mode = {};
 	bool m_fb_bound = false;
+	bool m_sw = false;
 	int m_width = 0, m_height = 0;
 	uint32_t m_fb = 0;
 	uint32_t m_prev_fb = 0;
 	uint32_t m_gem_handles[4] = {0, 0, 0, 0};
 	uint32_t m_prev_handles[4] = {0, 0, 0, 0};
+	uint32_t m_dumb_fb = 0, m_dumb_handle = 0, m_dumb_pitch = 0;
+	size_t m_dumb_size = 0;
+	uint8_t *m_dumb_map = nullptr;
+	struct SwsContext *m_sws = nullptr;
 };
 
 /* ------------------------------------------------------------------ */

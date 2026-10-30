@@ -749,10 +749,11 @@ jobs:
       - name: Prepare hivxe-ffmpeg headers
         run: |
           git clone --depth 1 https://github.com/HiSilicon-Development/FFmpeg.git /tmp/hivxe-ff
-          mkdir -p /tmp/hivxe-ff-include/libavcodec /tmp/hivxe-ff-include/libavutil /tmp/hivxe-ff-include/libswresample
+          mkdir -p /tmp/hivxe-ff-include/libavcodec /tmp/hivxe-ff-include/libavutil /tmp/hivxe-ff-include/libswresample /tmp/hivxe-ff-include/libswscale
           cp /tmp/hivxe-ff/libavcodec/*.h /tmp/hivxe-ff-include/libavcodec/
           cp /tmp/hivxe-ff/libavutil/*.h /tmp/hivxe-ff-include/libavutil/
           cp /tmp/hivxe-ff/libswresample/*.h /tmp/hivxe-ff-include/libswresample/
+          cp /tmp/hivxe-ff/libswscale/*.h /tmp/hivxe-ff-include/libswscale/
           # 生成头（configure 产物）：arm64 little-endian 固定模板
           cat > /tmp/hivxe-ff-include/libavutil/avconfig.h << 'EOF'
           #ifndef AVUTIL_AVCONFIG_H
