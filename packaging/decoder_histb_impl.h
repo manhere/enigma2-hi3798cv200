@@ -373,6 +373,7 @@ private:
 			int afc = (packet[3] >> 4) & 3;
 			if (pid != m_pid)
 				continue;
+			int cc = packet[3] & 0x0f;
 			if (!m_first_pid_packet)
 			{
 				m_first_pid_packet = true;
@@ -381,7 +382,6 @@ private:
 			}
 			if (!(afc & 1))
 				continue;
-			int cc = packet[3] & 0x0f;
 			bool discontinuity = (afc & 2) && packet[4] && (packet[5] & 0x80);
 			if (m_cc >= 0 && !discontinuity)
 			{
