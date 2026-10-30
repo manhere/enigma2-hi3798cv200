@@ -407,18 +407,19 @@ public:
 	{
 		if (m_fd >= 0)
 			return true;
-		for (int card = 0; card < 4; ++card)
+	for (int card = 0; card < 4; ++card)
+	{
+		char path[64];
+		snprintf(path, sizeof(path), "/dev/dri/card%d", card);
+		int fd = ::open(path, O_RDWR | O_CLOEXEC);
+		if (fd < 0)
+			continue;
+		eDebug("[histb-dec] probing %s", path);
+		if (!probeCard(fd))
 		{
-			char path[64];
-			snprintf(path, sizeof(path), "/dev/dri/card%d", card);
-			int fd = ::open(path, O_RDWR | O_CLOEXEC);
-			if (fd < 0)
-				continue;
-			if (!probeCard(fd))
-			{
-				::close(fd);
-				continue;
-			}
+			::close(fd);
+			continue;
+		}
 			m_fd = fd;
 			/* make sure we can drive the plane even when fbcon holds KMS */
 			if (drmSetMaster(m_fd) == 0)
@@ -507,7 +508,10 @@ private:
 	{
 		drmModeResPtr res = drmModeGetResources(fd);
 		if (!res)
+		{
+			eDebug("[histb-dec] drmModeGetResources failed: %s", strerror(errno));
 			return false;
+		}
 		int crtc_id = -1;
 		int width = 0, height = 0;
 		for (int i = 0; i < res->count_connectors && crtc_id < 0; ++i)
@@ -515,6 +519,8 @@ private:
 			drmModeConnectorPtr conn = drmModeGetConnector(fd, res->connectors[i]);
 			if (!conn)
 				continue;
+			eDebug("[histb-dec] connector %u connection %d encoder %u",
+				conn->connector_id, conn->connection, conn->encoder_id);
 			if (conn->connection == DRM_MODE_CONNECTED && conn->encoder_id)
 			{
 				drmModeEncoderPtr enc = drmModeGetEncoder(fd, conn->encoder_id);
@@ -529,12 +535,29 @@ private:
 						drmModeFreeCrtc(crtc);
 					}
 				}
+				else
+					eDebug("[histb-dec] encoder %u has no crtc", conn->encoder_id);
 				if (enc)
 					drmModeFreeEncoder(enc);
 			}
 			drmModeFreeConnector(conn);
 		}
 		if (crtc_id < 0 || !width || !height)
+		{
+			eDebug("[histb-dec] no connected connector/crtc (TV off?) crtc %d %dx%d",
+				crtc_id, width, height);
+			drmModeFreeResources(res);
+			return false;
+		}
+		/* crtc index into possible_crtcs bitmasks */
+		int crtc_index = -1;
+		for (int i = 0; i < res->count_crtcs; ++i)
+			if ((int)res->crtcs[i] == crtc_id)
+			{
+				crtc_index = i;
+				break;
+			}
+		if (crtc_index < 0)
 		{
 			drmModeFreeResources(res);
 			return false;
@@ -543,36 +566,62 @@ private:
 		drmModePlaneResPtr planes = drmModeGetPlaneResources(fd);
 		if (!planes)
 		{
+			eDebug("[histb-dec] drmModeGetPlaneResources failed: %s", strerror(errno));
 			drmModeFreeResources(res);
 			return false;
 		}
-		uint32_t plane_id = 0;
-		for (uint32_t i = 0; i < planes->count_planes && !plane_id; ++i)
+		eDebug("[histb-dec] card has %u planes, using crtc %u (idx %d) %dx%d",
+			planes->count_planes, crtc_id, crtc_index, width, height);
+		uint32_t overlay_id = 0, fallback_id = 0;
+		for (uint32_t i = 0; i < planes->count_planes; ++i)
 		{
 			drmModePlanePtr plane = drmModeGetPlane(fd, planes->planes[i]);
 			if (!plane)
 				continue;
+			bool usable_crtc = (plane->possible_crtcs >> crtc_index) & 1;
+			bool is_overlay = false;
 			drmModeObjectPropertiesPtr props = drmModeObjectGetProperties(fd, plane->plane_id, DRM_MODE_OBJECT_PLANE);
 			if (props)
 			{
 				for (uint32_t p = 0; p < props->count_props; ++p)
 				{
 					drmModePropertyPtr prop = drmModeGetProperty(fd, props->props[p]);
-					if (prop && !strcmp(prop->name, "type") && props->prop_values[p] == DRM_PLANE_TYPE_OVERLAY)
-						plane_id = plane->plane_id;
+					if (prop && !strcmp(prop->name, "type"))
+					{
+						is_overlay = props->prop_values[p] == DRM_PLANE_TYPE_OVERLAY;
+						drmModeFreeProperty(prop);
+						break;
+					}
 					if (prop)
 						drmModeFreeProperty(prop);
-					if (plane_id)
-						break;
 				}
 				drmModeFreeObjectProperties(props);
 			}
+			eDebug("[histb-dec] plane %u crtc %u fb %u possible 0x%x overlay %d usable %d",
+				plane->plane_id, plane->crtc_id, plane->fb_id,
+				plane->possible_crtcs, (int)is_overlay, (int)usable_crtc);
+			if (!usable_crtc)
+			{
+				drmModeFreePlane(plane);
+				continue;
+			}
+			if (is_overlay && !overlay_id)
+				overlay_id = plane->plane_id;
+			/* no "type" property (vendor driver): an unbound plane that
+			 * cannot be the primary (fbcon owns it) is our best guess */
+			if (!overlay_id && !fallback_id && !is_overlay &&
+				plane->fb_id == 0 && plane->crtc_id == 0)
+				fallback_id = plane->plane_id;
 			drmModeFreePlane(plane);
 		}
 		drmModeFreePlaneResources(planes);
 		drmModeFreeResources(res);
+		uint32_t plane_id = overlay_id ? overlay_id : fallback_id;
 		if (!plane_id)
+		{
+			eDebug("[histb-dec] no usable plane on this card");
 			return false;
+		}
 		m_crtc_id = crtc_id;
 		m_plane_id = plane_id;
 		m_width = width;
