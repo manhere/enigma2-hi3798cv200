@@ -689,7 +689,7 @@ jobs:
       # extra 安装件的 avcodec 63.1.101 同源），运行时 dlopen 不硬链接。
       - name: Patch histb decoder backend
         run: |
-          python << 'EOF'
+          python3 << 'EOF'
           import shutil
           shutil.copy('packaging/decoder_histb_impl.h', 'enigma2/lib/dvb/decoder_histb_impl.h')
 
