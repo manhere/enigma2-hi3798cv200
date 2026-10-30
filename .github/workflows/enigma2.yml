@@ -734,6 +734,16 @@ jobs:
           anchor = '#ifdef HAVE_HISTB\n#include <lib/dvb/decoder_histb_impl.h>'
           assert s.count(anchor) == 1, 'histb include anchor'
           s = s.replace(anchor, block + '\n' + anchor, 1)
+          # histb backend implements audio via ALSA; the box has no legacy
+          # DVB /dev/dvb/adapterN/audioN device node, so m_has_audio stays
+          # false and setAudioPID() silently forces apid=-1. Force it on.
+          old = 'm_has_audio = !access(filename, W_OK);'
+          assert s.count(old) == 1, 'm_has_audio anchor'
+          s = s.replace(old,
+              old + '\n'
+              '#ifdef HAVE_HISTB\n'
+              '\t\tm_has_audio = true;\n'
+              '#endif', 1)
           depth = 0
           for line in s.split('\n'):
               st = line.strip()
