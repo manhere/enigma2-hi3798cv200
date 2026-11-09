@@ -3229,8 +3229,9 @@ private:
 			 * Two distinct failure classes are fused through m_output_error:
 			 *  - nativeDecodeFailed(): the VDEC pipeline itself died (e.g. an
 			 *    AVS completion error during a TS desync storm) and left an
-			 *    invalid DPB. We MUST NOT feed dependent (non-IDR) pictures,
-			 *    so rejoin only at the broadcaster's random access point.
+			 *    invalid DPB; avcodec_flush_buffers() discards it, so we may
+			 *    rejoin at a bounded timeout instead of waiting forever for an
+			 *    IDR.
 			 *  - video output failure (showFrame failed with nativeError()):
 			 *    the decode pipeline is still healthy and only the KMS/DRM
 			 *    presentation path choked. Recover at the next random access
@@ -3239,24 +3240,23 @@ private:
 			 *    of GOP structure. This is the fix for the "play a while then
 			 *    the picture freezes forever" symptom. */
 			bool decode_died = m_drm.nativeDecodeFailed();
-			if (decode_died)
+			bool out_err = m_drm.nativeError();
+			if (!decode_died && !out_err)
+				return;   /* stop/flush cancellation, not an error: stay fused */
 			{
-				if (!random_access) return;          /* wait for a clean IDR */
-			}
-			else if (!m_drm.nativeError())
-			{
-				/* Not a decode death and not a reported output error: this is
-				 * the "native producer cancelled for stop/flush" case, where
-				 * feedPes must not fight an in-flight stop. Stay fused. */
-				return;
-			}
-			else
-			{
-				/* transient output failure: rejoin at the next random access
-				 * when one is due, otherwise force recovery after a bounded
-				 * timeout; throttle forced retries so we do not hammer
-				 * hide()/resumeNative() on every PES while the display path
-				 * is still wedged. */
+				/* Both failure classes recover through the same gate so a live
+				 * picture can never freeze longer than a bounded timeout:
+				 *  - decode death (nativeDecodeFailed): the VDEC/native worker
+				 *    died (AVS completion error or a lost native frame during a
+				 *    TS desync storm). The original code waited forever for a
+				 *    clean IDR here, which is exactly the "play a while then
+				 *    freeze forever" symptom. avcodec_flush_buffers() clears
+				 *    the invalid DPB, so rejoining without an IDR is safe.
+				 *  - output failure (nativeError): only the KMS/DRM path choked
+				 *    while the decode pipeline is healthy.
+				 * Rejoin at the next broadcast random access when one is due,
+				 * otherwise force recovery after ~2 s, throttled to one
+				 * attempt / 500 ms so a wedged display is not hammered. */
 				int64_t now = histb_monotonicUs();
 				if (m_output_error_since == 0) m_output_error_since = now;
 				if (random_access)
@@ -3270,7 +3270,7 @@ private:
 				}
 				else
 				{
-					return;                          /* wait for IDR or timeout */
+					return;   /* wait for a broadcast IDR or the bounded timeout */
 				}
 			}
 			if (!m_drm.hide()) return;
