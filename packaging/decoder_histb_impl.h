@@ -3143,6 +3143,8 @@ public:
 		m_unsynced_count = 0;
 		m_first_frame = false;
 		m_output_error = false;
+		m_output_error_since = 0;
+		m_last_recover_try = 0;
 		/* DMX_PES_OTHER: the vendor demux delivers TSDEMUX_TAP data on
 		 * OTHER (recorder path, verified working on 8001 streaming) and
 		 * AUDIO0 taps, but not on VIDEO0 - video tap stayed silent. */
@@ -3184,6 +3186,8 @@ public:
 		if (!m_drm.hide()) return;
 		if (m_avctx) avcodec_flush_buffers(m_avctx);
 		m_output_error = !m_drm.resumeNative();
+		m_output_error_since = 0;
+		m_last_recover_try = 0;
 	}
 
 	void freeze() { m_frozen = true; }
@@ -3221,16 +3225,66 @@ private:
 		if (m_output_error)
 		{
 			/* A lost/invalid reference must not freeze a live service forever.
-			 * Never retry failed KMS retirement or feed dependent pictures with
-			 * an invalid DPB. Rejoin only at the broadcaster's random access. */
-			if (!m_drm.nativeDecodeFailed() || !random_access) return;
+			 *
+			 * Two distinct failure classes are fused through m_output_error:
+			 *  - nativeDecodeFailed(): the VDEC pipeline itself died (e.g. an
+			 *    AVS completion error during a TS desync storm) and left an
+			 *    invalid DPB. We MUST NOT feed dependent (non-IDR) pictures,
+			 *    so rejoin only at the broadcaster's random access point.
+			 *  - video output failure (showFrame failed with nativeError()):
+			 *    the decode pipeline is still healthy and only the KMS/DRM
+			 *    presentation path choked. Recover at the next random access
+			 *    point when one is due, but guarantee the live picture can
+			 *    never freeze longer than a bounded timeout (~2 s) regardless
+			 *    of GOP structure. This is the fix for the "play a while then
+			 *    the picture freezes forever" symptom. */
+			bool decode_died = m_drm.nativeDecodeFailed();
+			if (decode_died)
+			{
+				if (!random_access) return;          /* wait for a clean IDR */
+			}
+			else if (!m_drm.nativeError())
+			{
+				/* Not a decode death and not a reported output error: this is
+				 * the "native producer cancelled for stop/flush" case, where
+				 * feedPes must not fight an in-flight stop. Stay fused. */
+				return;
+			}
+			else
+			{
+				/* transient output failure: rejoin at the next random access
+				 * when one is due, otherwise force recovery after a bounded
+				 * timeout; throttle forced retries so we do not hammer
+				 * hide()/resumeNative() on every PES while the display path
+				 * is still wedged. */
+				int64_t now = histb_monotonicUs();
+				if (m_output_error_since == 0) m_output_error_since = now;
+				if (random_access)
+				{
+					/* clean rejoin at broadcast random access: no throttle */
+				}
+				else if (now - m_output_error_since >= 2000000)
+				{
+					if (now - m_last_recover_try < 500000) return;
+					m_last_recover_try = now;
+				}
+				else
+				{
+					return;                          /* wait for IDR or timeout */
+				}
+			}
 			if (!m_drm.hide()) return;
 			av_frame_unref(m_frame);
 			avcodec_flush_buffers(m_avctx);
 			if (!m_drm.resumeNative()) return;
 			m_output_error = false;
+			m_output_error_since = 0;
+			m_last_recover_try = 0;
 			m_synced = false;
-			eWarning("[histb-dec] discarded failed decode references; resuming at broadcast random access");
+			eWarning("[histb-dec] %s; resuming decode%s",
+				decode_died ? "discarded failed decode references at broadcast random access"
+				            : "recovered from transient video output failure",
+				random_access ? " (random access)" : "");
 		}
 		if (!m_synced)
 		{
@@ -3377,6 +3431,8 @@ private:
 	unsigned m_unsynced_count = 0;
 	bool m_first_frame = false;
 	bool m_output_error = false;
+	int64_t m_output_error_since = 0;   /* wall time the output fuse first tripped */
+	int64_t m_last_recover_try = 0;     /* last forced-recovery attempt timestamp */
 	std::atomic<bool> m_frozen{false};
 	int64_t m_last_pts = -1;
 	int m_width = 0, m_height = 0, m_framerate = 0, m_aspect = 0, m_progressive = 0;
