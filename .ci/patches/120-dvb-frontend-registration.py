@@ -94,21 +94,37 @@ elif 'scanDevices(int fe_base)' in s:
     pass
 else:
     raise SystemExit('dvb.cpp scanDevices anchor not found - upstream changed, review needed')
-old = '\t\t\tfe = new eDVBFrontend(name.c_str(), num_fe, ok, true);\n'
-new = '\t\t\tfe = new eDVBFrontend(name.c_str(), num_fe + fe_base, ok, true);\n'
-if old in s:
-    s = s.replace(old, new, 1)
-elif 'num_fe + fe_base, ok, true' in s:
-    pass
-else:
-    raise SystemExit('dvb.cpp simulate frontend anchor not found - upstream changed, review needed')
-old = '\t\t\tfe = new eDVBFrontend(name.c_str(), num_fe, ok, false, fe);\n'
-new = '\t\t\tfe = new eDVBFrontend(name.c_str(), num_fe + fe_base, ok, false, fe);\n'
-if old in s:
-    s = s.replace(old, new, 1)
-elif 'num_fe + fe_base, ok, false' in s:
-    pass
-else:
-    raise SystemExit('dvb.cpp real frontend anchor not found - upstream changed, review needed')
+# Upstream replaced the shared 'ok' flag with separate simulateOk / frontendOk
+# probes and took ownership through ePtr. Both constructors still receive the
+# slot id, so both need the fe_base offset to keep slot ids globally unique;
+# the num_fe used for /sys and /dev paths above must stay unshifted.
+FRONTEND_CTORS = {
+    'simulate': (
+        '\t\tePtr<eDVBFrontend> simulateFrontend = new eDVBFrontend(name.c_str(), num_fe, simulateOk, true);\n',
+        '\t\tePtr<eDVBFrontend> simulateFrontend = new eDVBFrontend(name.c_str(), num_fe + fe_base, simulateOk, true);\n',
+        '\t\t\tfe = new eDVBFrontend(name.c_str(), num_fe, ok, true);\n',
+        '\t\t\tfe = new eDVBFrontend(name.c_str(), num_fe + fe_base, ok, true);\n',
+        'num_fe + fe_base, simulateOk, true',
+        'num_fe + fe_base, ok, true',
+    ),
+    'real': (
+        '\t\tePtr<eDVBFrontend> frontend = new eDVBFrontend(name.c_str(), num_fe, frontendOk, false, simulateFrontend);\n',
+        '\t\tePtr<eDVBFrontend> frontend = new eDVBFrontend(name.c_str(), num_fe + fe_base, frontendOk, false, simulateFrontend);\n',
+        '\t\t\tfe = new eDVBFrontend(name.c_str(), num_fe, ok, false, fe);\n',
+        '\t\t\tfe = new eDVBFrontend(name.c_str(), num_fe + fe_base, ok, false, fe);\n',
+        'num_fe + fe_base, frontendOk, false',
+        'num_fe + fe_base, ok, false',
+    ),
+}
+for kind, (new_old, new_new, old_old, old_new, new_done, old_done) in FRONTEND_CTORS.items():
+    if new_old in s:
+        s = s.replace(new_old, new_new, 1)
+        continue
+    if old_old in s:
+        s = s.replace(old_old, old_new, 1)
+        continue
+    if new_done in s or old_done in s:
+        continue
+    raise SystemExit('dvb.cpp %s frontend anchor not found - upstream changed, review needed' % kind)
 open(p, 'w').write(s)
 print('dvb.cpp mainline adapter registration patched')
