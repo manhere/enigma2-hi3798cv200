@@ -1084,19 +1084,6 @@ index 5b70a6c..a0b02f5 100644
  
  	def keyMoveItemUp(self):
  		self.moveItem(-1)
-diff --git a/lib/python/Screens/Screen.py b/lib/python/Screens/Screen.py
-index 3f80ee7..cfee928 100644
---- a/lib/python/Screens/Screen.py
-+++ b/lib/python/Screens/Screen.py
-@@ -41,6 +41,8 @@ class Screen(dict):
- 		self.onShow = []
- 		self.onHide = []
- 		self.execing = False
-+		# Summary callbacks can fail before execBegin; teardown still needs this state.
-+		self.activeComponents = []
- 		self.shown = True
- 		self.alreadyShown = False  # Already shown is false until the screen is really shown (after creation).
- 		self.renderer = []
 diff --git a/lib/python/Screens/Setup.py b/lib/python/Screens/Setup.py
 index 4a74847..2aaed8a 100644
 --- a/lib/python/Screens/Setup.py
@@ -1132,18 +1119,18 @@ index 4a74847..2aaed8a 100644
  		self.graphicSwitchChanged = False
  		self.list = prependItems or []
 diff --git a/lib/python/Screens/SkinSelection.py b/lib/python/Screens/SkinSelection.py
-index 779907a..02ee6ff 100644
+index 0ef154d..ba088aa 100644
 --- a/lib/python/Screens/SkinSelection.py
 +++ b/lib/python/Screens/SkinSelection.py
-@@ -7,6 +7,7 @@ from Components.config import ConfigSelection, NoSave, config
- from Components.Pixmap import Pixmap
+@@ -8,6 +8,7 @@ from Components.Pixmap import Pixmap
  from Components.PluginComponent import plugins
+ from Components.SystemInfo import BoxInfo
  from Plugins.Plugin import PluginDescriptor
 +from Screens.MessageBox import MessageBox
  from Screens.Processing import Processing
  from Screens.Setup import Setup
  from Screens.Standby import QUIT_RESTART, TryQuitMainloop
-@@ -31,6 +32,7 @@ class SkinSelection(Setup):
+@@ -32,6 +33,7 @@ class SkinSelection(Setup):
  		self.lcdRoot = join(self.guiRoot, "display")
  		self.noPreview = join(resolveFilename(SCOPE_GUISKIN), "noprev.png")
  		self.createItems()
@@ -1151,7 +1138,7 @@ index 779907a..02ee6ff 100644
  		Setup.__init__(self, session, "Skin")
  		self["preview"] = Pixmap()
  		self["preview"].hide()
-@@ -87,14 +89,19 @@ class SkinSelection(Setup):
+@@ -92,14 +94,19 @@ class SkinSelection(Setup):
  		Setup.selectionChanged(self)
  		self.loadPreview()
  
@@ -1174,7 +1161,7 @@ index 779907a..02ee6ff 100644
  
  		from Screens.ChannelSelection import ChannelSelection, ChannelSelectionSetup
  
-@@ -104,7 +111,12 @@ class SkinSelection(Setup):
+@@ -109,7 +116,12 @@ class SkinSelection(Setup):
  		if guiSkinChanged and config.usage.fastSkinReload.value:
  			Processing.instance.setDescription(_("Loading skin..."))
  			Processing.instance.showProgress(endless=True)
