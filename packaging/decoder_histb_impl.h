@@ -2540,10 +2540,9 @@ public:
 			{eDVBAudio::aLPCM,  AV_CODEC_ID_PCM_S16BE, "lpcm"},
 			{eDVBAudio::aDTSHD, AV_CODEC_ID_DTS,       "dtshd"},
 			{eDVBAudio::aDDP,   AV_CODEC_ID_EAC3,      "eac3"},
-			/* hivxe-ffmpeg codec_id.h has no AV_CODEC_ID_DRA enum yet;
-			 * resolve by decoder name so an upgraded extra package with a
-			 * dra decoder becomes usable without touching enigma2 */
-			{eDVBAudio::aDRA,   AV_CODEC_ID_NONE,      "dra"},
+			/* hivxe-ffmpeg now registers DRA with AV_CODEC_ID_DRA; resolve by
+			 * codec id, falling back to the decoder name "dra" if needed */
+			{eDVBAudio::aDRA,   AV_CODEC_ID_DRA,       "dra"},
 			{eDVBAudio::aAC4,   AV_CODEC_ID_AC4,       "ac4"},
 		};
 		const AVCodec *codec = nullptr;
